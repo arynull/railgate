@@ -45,6 +45,28 @@ Line format: `protocol://[user:pass@]host:port`, e.g.
 `socks5://u:p@1.2.3.4:1080`, `http://5.6.7.8:8080`, or bare `9.10.11.12:3128`
 (assumed `http`). Lines starting with `#` are ignored.
 
+## Subscription sources (auto-fetch)
+
+Instead of pasting proxies by hand, give RailGate **proxy-list URLs** and it
+re-fetches each on its own timer, merging new proxies into the pool (then
+health-checking them like any other upstream):
+
+```bash
+# Add one or more list URLs (immediate first fetch, then every 10 min here)
+curl -X POST $APP/api/sources -H "Content-Type: application/json" \
+  -d '{"urls":["https://example.com/proxies.txt"],"intervalMin":10}'
+
+# Re-fetch one source now / change its timer / remove it
+curl -X POST $APP/api/sources/<id>/fetch
+curl -X PATCH $APP/api/sources/<id> -d '{"intervalMin":60}'
+curl -X DELETE "$APP/api/sources/<id>?deleteProxies=1"
+```
+
+Per-source options: `intervalMin` (min 1), `prune:true` (drop this source's
+proxies when they vanish from its list). Or seed sources via the
+`SUBSCRIPTION_URLS` env var (comma/newline-separated — handy as a Railway
+Variable). The web panel has a dedicated **Sources** tab for all of this.
+
 ## Use it
 
 ```bash
@@ -90,6 +112,11 @@ Fetch API, `x-proxy-latency-ms`.
 | POST | `/api/proxies/check` | yes | Health-check the pool right now |
 | GET | `/api/stats` | yes | Request/error/session counters |
 | DELETE | `/api/sessions/:id` | yes | Release a sticky session |
+| GET | `/api/sources` | yes | List subscription sources + fetch status |
+| POST | `/api/sources` | yes | `{url}` or `{urls:[...]}` + `intervalMin`, `prune`; fetches immediately |
+| POST | `/api/sources/:id/fetch` | yes | Re-fetch one source now |
+| PATCH | `/api/sources/:id` | yes | Change `intervalMin` / `prune` |
+| DELETE | `/api/sources/:id` | yes | Remove source (`?deleteProxies=1` also drops its proxies) |
 | GET/POST | `/fetch?url=...` | yes | Fetch a URL through the pool (`&session=`, `&retries=`, `&timeout=`) |
 | ANY | `/proxy?url=...` | yes | Alias of `/fetch` |
 
@@ -112,12 +139,18 @@ Auth = `x-api-key` header or `?key=` query when `GATEWAY_KEY` is set.
 | `BLOCK_PRIVATE` | `true` | Refuse private/internal targets (SSRF guard) |
 | `MAX_BODY_MB` | `10` | Max forwarded request body |
 | `DATA_FILE` | `./proxies.json` | Pool persistence file |
+| `SUBSCRIPTION_URLS` | _(empty)_ | Seed subscription URLs (comma/newline-separated, e.g. Railway Variable) |
+| `SUBSCRIPTION_INTERVAL_MS` | `600000` | Default re-fetch period per source (min 1 min) |
+| `SUBSCRIPTION_TIMEOUT_MS` | `20000` | Fetch timeout per source |
+| `SUBSCRIPTION_MAX_KB` | `2048` | Max list size accepted per fetch |
+| `SUBSCRIPTION_PRUNE` | `false` | Default: drop a source's proxies when they vanish from its list |
+| `SUBSCRIPTION_ALLOW_PRIVATE` | `false` | Accept private/LAN entries found in subscription lists |
 
 ## Local development
 
 ```bash
 npm install
-npm test          # smoke tests (boots the real server on :3457)
+npm test          # smoke + subscription suites (real servers on :3457/:3458 plus a local list)
 node server.js    # PORT=3000 by default, panel at http://localhost:3000/
 ```
 

@@ -136,6 +136,7 @@
     <a class="navlink active" href="#overview">📊 <span data-i18n="nav.overview">Overview</span></a>
     <a class="navlink" href="#proxies">📋 <span data-i18n="nav.proxies">Proxies</span></a>
     <a class="navlink" href="#add">➕ <span data-i18n="nav.add">Add proxies</span></a>
+    <a class="navlink" href="#sources">🔗 <span data-i18n="nav.sources">Sources</span></a>
     <a class="navlink" href="#test">📡 <span data-i18n="nav.test">Test gateway</span></a>
     <a class="navlink" href="#integrate">💻 <span data-i18n="nav.integrate">Integration</span></a>
     <a class="navlink" href="#activity">🧾 <span data-i18n="nav.activity">Activity</span></a>
@@ -233,6 +234,7 @@
   <div class="tabs mb-4" id="proxies">
     <button class="tab active" data-tab="tProxies" onclick="switchTab('tProxies')">📋 <span data-i18n="tab.proxies">Proxies</span></button>
     <button class="tab" data-tab="tAdd" onclick="switchTab('tAdd')">➕ <span data-i18n="tab.add">Add</span></button>
+    <button class="tab" data-tab="tSubs" onclick="switchTab('tSubs')">🔗 <span data-i18n="tab.subs">Sources</span></button>
     <button class="tab" data-tab="tTest" onclick="switchTab('tTest')">📡 <span data-i18n="tab.test">Test</span></button>
     <button class="tab" data-tab="tDocs" onclick="switchTab('tDocs')">💻 <span data-i18n="tab.docs">Integrate</span></button>
   </div>
@@ -286,6 +288,25 @@
         <div class="text-sm font-medium" data-i18n="ad.drop">Drop a .txt file here or click to browse</div>
         <div class="text-xs mt-1" style="color:hsl(var(--muted));" data-i18n="ad.drop2">One proxy per line · max 1 MB</div>
         <input type="file" id="file" accept=".txt,.csv" class="hidden" onchange="uploadFile()">
+      </div>
+    </div>
+  </section>
+
+  <!-- Sources (auto-fetch) -->
+  <section id="tSubs" class="tabpanel card mb-5 hidden">
+    <div class="card-hd" id="sources"><div class="card-title">🔗 <span data-i18n="su.title">Subscription sources</span></div>
+      <div class="card-desc" data-i18n="su.sub">Paste proxy-list URLs — the gateway re-fetches each on its own timer and merges new proxies into the pool.</div></div>
+    <div class="card-bd flex flex-col gap-3">
+      <div class="flex flex-col sm:flex-row gap-2">
+        <input id="suburl" class="input mono ltr flex-1" style="direction:ltr;" placeholder="https://example.com/proxies.txt" dir="ltr">
+        <input id="submin" type="number" min="1" value="10" class="input mono ltr" style="width:110px;direction:ltr;" title="minutes" dir="ltr">
+        <button class="btn btn-primary" id="subBtn" onclick="addSource()">➕ <span data-i18n="su.add">Add source</span></button>
+      </div>
+      <label class="flex items-center gap-2 text-xs" style="color:hsl(var(--muted));">
+        <input type="checkbox" id="subprune"> <span data-i18n="su.prune">Prune: drop this source's proxies when they disappear from the list</span>
+      </label>
+      <div class="flex flex-col gap-2" id="srcList">
+        <div class="skel" style="height:52px;"></div>
       </div>
     </div>
   </section>
@@ -386,13 +407,13 @@
 <script>
 /* ============================== i18n ============================== */
 const I18N = {
-en:{ 'nav.overview':'Overview','nav.proxies':'Proxies','nav.add':'Add proxies','nav.test':'Test gateway','nav.integrate':'Integration','nav.activity':'Activity',
+en:{ 'nav.overview':'Overview','nav.proxies':'Proxies','nav.add':'Add proxies','nav.sources':'Sources','nav.test':'Test gateway','nav.integrate':'Integration','nav.activity':'Activity',
 'side.status':'Gateway online','top.copy':'Copy','top.copied':'Copied to clipboard','top.refresh':'Refresh','top.noauth':'open','top.locked':'locked',
 'hero.title':'Rotating proxy gateway','hero.sub':'Pool HTTP / HTTPS / SOCKS upstreams behind one URL — health-checked, speed-weighted, with failover & sticky sessions.',
 'hero.key':'Gateway key (GATEWAY_KEY)','hero.keyhint':'Leave empty if the server has no key set.',
 'st.total':'Total proxies','st.alive':'Alive','st.req':'Requests','st.err':'Errors',
 'pool.health':'Pool health','pool.check':'Check now','pool.checking':'Checking…',
-'tab.proxies':'Proxies','tab.add':'Add','tab.test':'Test','tab.docs':'Integrate',
+'tab.proxies':'Proxies','tab.add':'Add','tab.subs':'Sources','tab.test':'Test','tab.docs':'Integrate',
 'px.title':'Upstream proxies','px.sub':'Live status, latency and usage per upstream. Passwords are never shown.',
 'px.all':'All','px.alive':'Alive','px.dead':'Dead','px.clear':'Clear all',
 'th.status':'Status','th.proxy':'Proxy','th.latency':'Latency','th.used':'Last used',
@@ -408,14 +429,18 @@ en:{ 'nav.overview':'Overview','nav.proxies':'Proxies','nav.add':'Add proxies','
 'row.alive':'alive','row.dead':'dead','row.unknown':'unknown','row.empty':'Empty — add proxies in the Add tab',
 'msg.added':'proxies added','msg.replaced':'pool replaced','msg.cleared':'pool cleared','msg.removed':'removed','msg.checked':'health check done',
 'msg.needkey':'Set the gateway key first','msg.needlist':'Paste at least one proxy','msg.needfile':'Choose a file first','msg.badfile':'Upload failed',
-'msg.testfail':'Request failed','msg.offline':'Gateway unreachable'},
-fa:{ 'nav.overview':'نمای کلی','nav.proxies':'پروکسی‌ها','nav.add':'افزودن پروکسی','nav.test':'تست گیت‌وی','nav.integrate':'اتصال','nav.activity':'فعالیت‌ها',
+'msg.testfail':'Request failed','msg.offline':'Gateway unreachable',
+'su.title':'Subscription sources','su.sub':'Paste proxy-list URLs — the gateway re-fetches each on its own timer and merges new proxies into the pool.',
+'su.add':'Add source','su.prune':"Prune: drop this source's proxies when they disappear from the list",
+'su.every':'every','su.min':'min','su.fetched':'fetched','su.never':'never','su.fetch':'Fetch now','su.del':'Delete source','su.delprox':'also delete its proxies',
+'su.empty':'No sources yet — paste a proxy-list URL above','msg.needurl':'Paste a subscription URL first','msg.srcadded':'source added','msg.srcfetched':'source re-fetched','msg.srcdel':'source deleted'},
+fa:{ 'nav.overview':'نمای کلی','nav.proxies':'پروکسی‌ها','nav.add':'افزودن پروکسی','nav.sources':'منبع‌ها','nav.test':'تست گیت‌وی','nav.integrate':'اتصال','nav.activity':'فعالیت‌ها',
 'side.status':'گیت‌وی آنلاین','top.copy':'کپی','top.copied':'کپی شد','top.refresh':'بروزرسانی','top.noauth':'بدون کلید','top.locked':'محافظت‌شده',
 'hero.title':'گیت‌وی چرخشی پروکسی','hero.sub':'تجمیع پروکسی‌های HTTP / HTTPS / SOCKS پشت یک آدرس — با تست سلامت، وزن‌دهی سرعتی، failover و سشن چسبان.',
 'hero.key':'کلید گیت‌وی (GATEWAY_KEY)','hero.keyhint':'اگر سرور کلید ندارد خالی بگذار.',
 'st.total':'کل پروکسی‌ها','st.alive':'سالم','st.req':'درخواست‌ها','st.err':'خطاها',
 'pool.health':'سلامت استخر','pool.check':'تست سلامت','pool.checking':'در حال تست…',
-'tab.proxies':'پروکسی‌ها','tab.add':'افزودن','tab.test':'تست','tab.docs':'اتصال',
+'tab.proxies':'پروکسی‌ها','tab.add':'افزودن','tab.subs':'منبع‌ها','tab.test':'تست','tab.docs':'اتصال',
 'px.title':'پروکسی‌های ورودی','px.sub':'وضعیت زنده، تأخیر و مصرف هر پروکسی. رمزها هرگز نمایش داده نمی‌شوند.',
 'px.all':'همه','px.alive':'سالم','px.dead':'خراب','px.clear':'حذف همه',
 'th.status':'وضعیت','th.proxy':'پروکسی','th.latency':'تأخیر','th.used':'آخرین استفاده',
@@ -431,7 +456,11 @@ fa:{ 'nav.overview':'نمای کلی','nav.proxies':'پروکسی‌ها','nav.a
 'row.alive':'سالم','row.dead':'خراب','row.unknown':'نامشخص','row.empty':'خالی — از تب افزودن پروکسی اضافه کن',
 'msg.added':'پروکسی اضافه شد','msg.replaced':'استخر جایگزین شد','msg.cleared':'استخر پاک شد','msg.removed':'حذف شد','msg.checked':'تست سلامت انجام شد',
 'msg.needkey':'اول کلید گیت‌وی را وارد کن','msg.needlist':'حداقل یک پروکسی بنویس','msg.needfile':'اول فایل انتخاب کن','msg.badfile':'آپلود ناموفق بود',
-'msg.testfail':'درخواست ناموفق بود','msg.offline':'گیت‌وی در دسترس نیست'}
+'msg.testfail':'درخواست ناموفق بود','msg.offline':'گیت‌وی در دسترس نیست',
+'su.title':'منبع‌های اشتراک','su.sub':'لینک لیست پروکسی بده — گیت‌وی هر کدام را سر تایمر خودش دوباره می‌گیرد و پروکسی‌های جدید را به استخر اضافه می‌کند.',
+'su.add':'افزودن منبع','su.prune':'هرس: پروکسی‌های این منبع که از لیست حذف شدند پاک شوند',
+'su.every':'هر','su.min':'دقیقه','su.fetched':'آخرین دریافت','su.never':'هرگز','su.fetch':'دریافت الان','su.del':'حذف منبع','su.delprox':'پروکسی‌هایش هم حذف شوند',
+'su.empty':'هنوز منبعی نیست — بالا لینک لیست پروکسی بده','msg.needurl':'اول لینک اشتراک را بنویس','msg.srcadded':'منبع اضافه شد','msg.srcfetched':'منبع دوباره دریافت شد','msg.srcdel':'منبع حذف شد'}
 };
 let LANG = localStorage.getItem('rg-lang') || 'en';
 const t = k => (I18N[LANG] && I18N[LANG][k]) || I18N.en[k] || k;
@@ -491,9 +520,83 @@ function switchTab(id){
   $(id).classList.remove('hidden');
   document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === id));
   document.querySelectorAll('#sidenav .navlink').forEach(a => {
-    const map = { tProxies:'#proxies', tAdd:'#add', tTest:'#test', tDocs:'#integrate' };
+    const map = { tProxies:'#proxies', tAdd:'#add', tSubs:'#sources', tTest:'#test', tDocs:'#integrate' };
     a.classList.toggle('active', map[id] === a.getAttribute('href'));
   });
+}
+
+/* ============================== sources ============================== */
+let srcCache = [];
+async function loadSources(){
+  try {
+    const r = await fetch(base + '/api/sources', { headers: authHeaders() }).then(r => r.json());
+    if (!r.ok) { $('srcList').innerHTML = `<div class="text-sm" style="color:hsl(var(--destructive));">${esc(r.error || '')}</div>`; return; }
+    srcCache = r.sources || [];
+    renderSources();
+  } catch(e){ $('srcList').innerHTML = `<div class="text-sm" style="color:hsl(var(--muted));">⚠ ${esc(e.message)}</div>`; }
+}
+function srcStatus(s){
+  if (s.lastStatus === 'ok') return `<span class="badge badge-ok">✓ ${s.lastAdded ?? 0} + · ${s.lastTotal ?? 0} listed</span>`;
+  if (s.lastStatus === 'error') return `<span class="badge badge-bad" title="${esc(s.lastError || '')}">✕ error</span>`;
+  return `<span class="badge badge-mut">… pending</span>`;
+}
+function renderSources(){
+  if (!srcCache.length) {
+    $('srcList').innerHTML = `<div class="text-center text-sm py-6" style="color:hsl(var(--muted));">${t('su.empty')}</div>`;
+    return;
+  }
+  $('srcList').innerHTML = srcCache.map(s => `
+    <div class="card p-3 flex flex-col sm:flex-row sm:items-center gap-2" style="background:hsl(var(--card2));">
+      <div class="flex-1 min-w-0">
+        <div class="mono text-xs ltr truncate" style="direction:ltr;" title="${esc(s.url)}">${esc(s.url)}</div>
+        <div class="flex flex-wrap items-center gap-2 mt-1 text-xs" style="color:hsl(var(--muted));">
+          ${srcStatus(s)}
+          <span class="mono">⏱ ${t('su.every')} ${Math.round((s.intervalMs || 600000) / 60000)} ${t('su.min')}</span>
+          <span>· ${t('su.fetched')}: ${s.lastFetch ? fmtTime(s.lastFetch) : t('su.never')}</span>
+          ${s.prune ? '<span class="badge badge-warn">prune</span>' : ''}
+        </div>
+      </div>
+      <div class="flex gap-1 shrink-0">
+        <button class="btn btn-secondary btn-sm" onclick="fetchSource('${s.id}')">↻ ${t('su.fetch')}</button>
+        <button class="btn btn-ghost btn-sm" onclick="delSource('${s.id}', false)">✕</button>
+        <button class="btn btn-destructive btn-sm" title="${t('su.delprox')}" onclick="delSource('${s.id}', true)">✕+🗑</button>
+      </div>
+    </div>`).join('');
+}
+async function addSource(){
+  const url = $('suburl').value.trim();
+  if (!url) return toast('⚠', t('msg.needurl'), 'err');
+  const mins = Math.max(1, parseInt($('submin').value, 10) || 10);
+  const btn = $('subBtn'); btn.disabled = true; btn.innerHTML = '<span class="spin"></span>';
+  try {
+    const r = await fetch(base + '/api/sources', { method:'POST', headers: authHeaders(true),
+      body: JSON.stringify({ url, intervalMin: mins, prune: $('subprune').checked }) }).then(r => r.json());
+    if (r.ok) {
+      const f = (r.fetches && r.fetches[0]) || {};
+      toast(`🔗 ${t('msg.srcadded')}`, `+${r.totalAdded ?? 0} proxies (${f.listed ?? '?'} listed)`, 'ok');
+      $('suburl').value = '';
+      log('🔗 ' + url.slice(0, 80) + ' → +' + (r.totalAdded ?? 0));
+    } else toast('⚠ ' + (r.error || ''), null, 'err');
+  } catch(e){ toast('⚠ ' + e.message, null, 'err'); }
+  btn.disabled = false; btn.innerHTML = '➕ <span>' + t('su.add') + '</span>';
+  loadSources(); refresh();
+}
+async function fetchSource(id){
+  try {
+    const r = await fetch(base + '/api/sources/' + encodeURIComponent(id) + '/fetch', { method:'POST', headers: authHeaders() }).then(r => r.json());
+    if (r.ok) toast(`↻ ${t('msg.srcfetched')}`, `+${r.added} new`, 'ok');
+    else toast('⚠ ' + (r.error || ''), null, 'err');
+    log('↻ sub → ' + JSON.stringify({ added: r.added, listed: r.listed }));
+  } catch(e){ toast('⚠ ' + e.message, null, 'err'); }
+  loadSources(); refresh();
+}
+async function delSource(id, withProxies){
+  try {
+    const r = await fetch(base + '/api/sources/' + encodeURIComponent(id) + (withProxies ? '?deleteProxies=1' : ''), { method:'DELETE', headers: authHeaders() }).then(r => r.json());
+    if (r.ok) toast('🗑 ' + t('msg.srcdel'), withProxies ? `${r.proxiesRemoved} proxies` : null, 'info');
+    else toast('⚠ ' + (r.error || ''), null, 'err');
+  } catch(e){ toast('⚠ ' + e.message, null, 'err'); }
+  loadSources(); refresh();
 }
 
 /* ============================== data ============================== */
@@ -669,8 +772,8 @@ $('dlg').addEventListener('click', e => { if (e.target.id === 'dlg') closeDialog
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDialog(); });
 setAuthBadge(true);
 setLang(LANG);
-refresh();
-setInterval(() => { if (!document.hidden) refresh(); }, 15000);
+refresh(); loadSources();
+setInterval(() => { if (!document.hidden) { refresh(); loadSources(); } }, 15000);
 </script>
 </body>
 </html>

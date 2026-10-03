@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node server.js",
-    "test": "node --test test/smoke.test.js"
+    "test": "node --test test/smoke.test.js test/sources.test.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

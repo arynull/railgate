@@ -21,6 +21,10 @@
  *  ALLOW_DIRECT=true  (if no proxies configured, go direct instead of 502)
  *  BLOCK_PRIVATE=true (SSRF guard: refuse localhost/LAN/cloud-metadata targets)
  *  MAX_BODY_MB=10
+ *  SUBSCRIPTION_URLS= (comma/newline-separated subscription links seeded on boot)
+ *  SUBSCRIPTION_INTERVAL_MS=600000  SUBSCRIPTION_TIMEOUT_MS=20000
+ *  SUBSCRIPTION_PRUNE=false (drop this source's proxies missing from latest fetch)
+ *  SUBSCRIPTION_MAX_KB=2048  SUBSCRIPTION_ALLOW_PRIVATE=false
  */
 
 'use strict';
@@ -52,19 +56,34 @@ const ALLOW_DIRECT = (process.env.ALLOW_DIRECT || 'true').toLowerCase() !== 'fal
 const BLOCK_PRIVATE = (process.env.BLOCK_PRIVATE || 'true').toLowerCase() !== 'false';
 const MAX_BODY_MB = parseInt(process.env.MAX_BODY_MB || '10', 10);
 const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'proxies.json');
+// Auto-fetch subscriptions: poll proxy-list URLs every N minutes.
+const SUBSCRIPTION_URLS = (process.env.SUBSCRIPTION_URLS || '').trim();
+const SUBSCRIPTION_INTERVAL_MS = parseInt(process.env.SUBSCRIPTION_INTERVAL_MS || '600000', 10);
+const SUBSCRIPTION_TIMEOUT_MS = parseInt(process.env.SUBSCRIPTION_TIMEOUT_MS || '20000', 10);
+const SUBSCRIPTION_MAX_KB = parseInt(process.env.SUBSCRIPTION_MAX_KB || '2048', 10);
+const SUBSCRIPTION_PRUNE = (process.env.SUBSCRIPTION_PRUNE || 'false').toLowerCase() !== 'false';
+const SUBSCRIPTION_ALLOW_PRIVATE = (process.env.SUBSCRIPTION_ALLOW_PRIVATE || 'false').toLowerCase() !== 'false';
 
 // ---------------------------------------------------------------- store
 
 // proxy entry: { url, protocol, alive, latencyMs, success, fail, consecFails,
-//                lastCheck, backoffUntil, lastUsed }
+//                lastCheck, backoffUntil, lastUsed, source }
+// source entry: { id, url, intervalMs, prune, lastFetch, lastStatus, lastAdded,
+//                 lastTotal, lastSkipped, lastError }
 let proxies = [];
+let sources = [];
 let totalRequests = 0;
 let totalErrors = 0;
+let subStats = { runs: 0, lastRun: null };
 const sessions = new Map(); // sessionId -> { proxyUrl, expires }
 
 function saveStore() {
   try {
-    fs.writeFileSync(DATA_FILE, JSON.stringify({ proxies }, null, 2));
+    const cleanSources = sources.map(s => {
+      const { _timer, ...rest } = s;
+      return rest;
+    });
+    fs.writeFileSync(DATA_FILE, JSON.stringify({ proxies, sources: cleanSources }, null, 2));
   } catch (e) { console.error('[store] save failed:', e.message); }
 }
 function loadStore() {
@@ -72,7 +91,8 @@ function loadStore() {
     if (fs.existsSync(DATA_FILE)) {
       const d = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
       if (Array.isArray(d.proxies)) proxies = d.proxies.filter(p => p && p.url);
-      console.log(`[store] loaded ${proxies.length} proxies from ${DATA_FILE}`);
+      if (Array.isArray(d.sources)) sources = d.sources.filter(s => s && s.url);
+      console.log(`[store] loaded ${proxies.length} proxies + ${sources.length} sources from ${DATA_FILE}`);
     }
   } catch (e) { console.error('[store] load failed:', e.message); }
 }
@@ -128,7 +148,157 @@ function addProxies(items, replace) {
   return added;
 }
 
-// ---------------------------------------------------------------- rotation
+// ---------------------------------------------------------------- subscriptions (auto-fetch proxy lists)
+
+function parseUrlList(text) {
+  return String(text || '').split(/[\r\n,;]+/).map(s => s.trim()).filter(s => s && !s.startsWith('#'));
+}
+
+let subTimer = null;
+const subFetching = new Set();
+
+async function fetchSubscription(source, { manual = false } = {}) {
+  if (!source || !source.url) throw Object.assign(new Error('missing-url'), { status: 400 });
+  if (subFetching.has(source.id)) return { ok: false, skipped: 'already-running' };
+  if (await targetBlocked(source.url)) throw Object.assign(new Error('forbidden-target: private source URL'), { status: 400 });
+  subFetching.add(source.id);
+  const t0 = Date.now();
+  try {
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(new Error('subscription-timeout')), SUBSCRIPTION_TIMEOUT_MS);
+    let res;
+    try {
+      res = await fetch(source.url, {
+        signal: ctrl.signal, redirect: 'follow',
+        headers: { 'user-agent': 'railgate-subscription/1.0', accept: 'text/plain,*/*' },
+      });
+    } finally { clearTimeout(to); }
+    if (!res.ok) throw new Error(`subscription-http-${res.status}`);
+    const ctype = (res.headers.get('content-type') || '').toLowerCase();
+    if (ctype.includes('text/html')) throw new Error('subscription-not-a-proxy-list (got HTML)');
+    const reader = res.body.getReader();
+    const chunks = [];
+    let bytes = 0;
+    const cap = Math.max(64, SUBSCRIPTION_MAX_KB) * 1024;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.length;
+      if (bytes > cap) { reader.cancel().catch(() => {}); throw new Error('subscription-too-large'); }
+      chunks.push(value);
+    }
+    const text = Buffer.concat(chunks).toString('utf8');
+    const { added, invalid } = parseProxyList(text);
+    // drop private/LAN entries from public lists unless explicitly allowed
+    let items = added;
+    let skippedPrivate = 0;
+    if (!SUBSCRIPTION_ALLOW_PRIVATE) {
+      items = [];
+      for (const it of added) {
+        try {
+          const u = new URL(it.url);
+          const h = u.hostname.toLowerCase();
+          let priv = net.isIP(h) ? ipBlocked(h)
+            : (['localhost', 'localhost.localdomain'].includes(h) || h.endsWith('.local') || h.endsWith('.internal'));
+          if (!priv && !net.isIP(h)) {
+            try { priv = ipBlocked((await dns.lookup(h)).address); } catch { priv = true; }
+          }
+          if (priv) { skippedPrivate++; continue; }
+          items.push(it);
+        } catch { skippedPrivate++; }
+      }
+    }
+    const seen = new Set(items.map(i => i.url));
+    let n = 0;
+    const urlSet = new Set(proxies.map(p => p.url));
+    for (const it of items) {
+      if (urlSet.has(it.url)) continue;
+      urlSet.add(it.url);
+      proxies.push({
+        url: it.url, protocol: it.protocol,
+        alive: null, latencyMs: null, success: 0, fail: 0,
+        consecFails: 0, lastCheck: null, backoffUntil: 0, lastUsed: null,
+        source: source.id,
+      });
+      n++;
+    }
+    if (source.prune) {
+      const before = proxies.length;
+      proxies = proxies.filter(p => p.source !== source.id || seen.has(p.url));
+      source.lastPruned = before - proxies.length;
+    }
+    source.lastFetch = Date.now();
+    source.lastStatus = 'ok';
+    source.lastError = null;
+    source.lastAdded = n;
+    source.lastTotal = items.length;
+    source.lastSkipped = invalid.length + skippedPrivate;
+    saveStore();
+    console.log(`[sub] ${source.id}: +${n} new (${items.length} listed, ${invalid.length} invalid, ${skippedPrivate} private) in ${Date.now() - t0}ms`);
+    const r = await checkAll();
+    subStats.runs++;
+    subStats.lastRun = Date.now();
+    if (manual) { /* immediate response below */ }
+    return { ok: true, added: n, listed: items.length, invalid: invalid.length, skippedPrivate, checked: r.checked, ms: Date.now() - t0 };
+  } catch (e) {
+    source.lastFetch = Date.now();
+    source.lastStatus = 'error';
+    source.lastError = String(e.message || e).slice(0, 200);
+    saveStore();
+    console.error(`[sub] ${source.id}: ${source.lastError}`);
+    throw Object.assign(new Error(source.lastError), { status: 502 });
+  } finally {
+    subFetching.delete(source.id);
+  }
+}
+
+function scheduleSource(source) {
+  if (source._timer) { clearInterval(source._timer); source._timer = null; }
+  const ms = Math.max(60000, parseInt(source.intervalMs, 10) || SUBSCRIPTION_INTERVAL_MS);
+  source._timer = setInterval(() => {
+    fetchSubscription(source).catch(() => {});
+  }, ms);
+  if (source._timer.unref) source._timer.unref();
+}
+
+function rescheduleAllSources() {
+  if (subTimer) { clearInterval(subTimer); subTimer = null; }
+  for (const s of sources) scheduleSource(s);
+}
+
+function addSource(url, { intervalMs, prune } = {}) {
+  let u;
+  try { u = new URL(url); } catch { throw Object.assign(new Error('bad-url'), { status: 400 }); }
+  if (!['http:', 'https:'].includes(u.protocol)) throw Object.assign(new Error('only http(s) subscription URLs'), { status: 400 });
+  const clean = u.toString();
+  let s = sources.find(x => x.url === clean);
+  if (s) {
+    if (intervalMs) s.intervalMs = intervalMs;
+    if (prune !== undefined) s.prune = !!prune;
+  } else {
+    s = {
+      id: 'sub' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+      url: clean,
+      intervalMs: Math.max(60000, parseInt(intervalMs, 10) || SUBSCRIPTION_INTERVAL_MS),
+      prune: prune !== undefined ? !!prune : SUBSCRIPTION_PRUNE,
+      lastFetch: null, lastStatus: 'pending', lastError: null,
+      lastAdded: 0, lastTotal: 0, lastSkipped: 0,
+    };
+    sources.push(s);
+  }
+  saveStore();
+  scheduleSource(s);
+  return s;
+}
+
+function removeSource(id) {
+  const s = sources.find(x => x.id === id || x.url === id);
+  if (!s) return null;
+  if (s._timer) clearInterval(s._timer);
+  sources = sources.filter(x => x !== s);
+  saveStore();
+  return s;
+}
 
 function backoffFor(p) {
   const n = Math.min(p.consecFails || 1, 6);
@@ -474,6 +644,70 @@ app.delete('/api/sessions/:id', gatewayAuth, (req, res) => {
   res.json({ ok: true, released: gone });
 });
 
+// --- Subscription sources (auto-fetch proxy lists on a timer)
+function publicSource(s) {
+  const { _timer, ...rest } = s;
+  return rest;
+}
+app.get('/api/sources', gatewayAuth, (req, res) => {
+  res.json({ ok: true, count: sources.length, sources: sources.map(publicSource), stats: subStats });
+});
+app.post('/api/sources', gatewayAuth, async (req, res) => {
+  const { urls, url, intervalMs, intervalMin, prune, fetchNow } = req.body || {};
+  const list = Array.isArray(urls) ? urls : (url ? [url] : []);
+  if (!list.length) return res.status(400).json({ ok: false, error: 'empty (send {url:"https://..."} or {urls:[...]})' });
+  const ms = intervalMs || (intervalMin ? Math.round(Number(intervalMin) * 60000) : undefined);
+  const created = [];
+  try {
+    for (const u of list) created.push(publicSource(addSource(String(u), { intervalMs: ms, prune })));
+  } catch (e) {
+    return res.status(e.status || 400).json({ ok: false, error: e.message });
+  }
+  let fetches = null;
+  if (fetchNow !== false) {
+    fetches = [];
+    for (const c of created) {
+      const s = sources.find(x => x.url === c.url);
+      try { fetches.push({ url: c.url, ...(await fetchSubscription(s, { manual: true })) }); }
+      catch (e) { fetches.push({ url: c.url, ok: false, error: e.message }); }
+    }
+  }
+  const totalAdded = fetches ? fetches.reduce((a, f) => a + (f.added || 0), 0) : 0;
+  res.json({ ok: true, added: created.length, sources: created, total: proxies.length, fetches, totalAdded });
+});
+app.post('/api/sources/:id/fetch', gatewayAuth, async (req, res) => {
+  const s = sources.find(x => x.id === req.params.id || x.url === req.params.id);
+  if (!s) return res.status(404).json({ ok: false, error: 'source-not-found' });
+  try {
+    const r = await fetchSubscription(s, { manual: true });
+    res.json({ ok: true, ...r, source: publicSource(s), total: proxies.length });
+  } catch (e) {
+    res.status(e.status || 502).json({ ok: false, error: e.message, source: publicSource(s) });
+  }
+});
+app.patch('/api/sources/:id', gatewayAuth, (req, res) => {
+  const s = sources.find(x => x.id === req.params.id || x.url === req.params.id);
+  if (!s) return res.status(404).json({ ok: false, error: 'source-not-found' });
+  const { intervalMs, intervalMin, prune } = req.body || {};
+  if (intervalMs || intervalMin) s.intervalMs = Math.max(60000, Math.round(Number(intervalMs || intervalMin * 60000)));
+  if (prune !== undefined) s.prune = !!prune;
+  saveStore(); scheduleSource(s);
+  res.json({ ok: true, source: publicSource(s) });
+});
+app.delete('/api/sources/:id', gatewayAuth, (req, res) => {
+  const { deleteProxies } = req.query || {};
+  const s = removeSource(req.params.id);
+  if (!s) return res.status(404).json({ ok: false, error: 'source-not-found' });
+  let removed = 0;
+  if (deleteProxies === '1') {
+    const before = proxies.length;
+    proxies = proxies.filter(p => p.source !== s.id);
+    removed = before - proxies.length;
+    saveStore();
+  }
+  res.json({ ok: true, removed: s.url, proxiesRemoved: removed, total: proxies.length, sources: sources.length });
+});
+
 // --- Fetch API (the simple way to use the gateway)
 async function handleFetch(req, res) {
   const q = req.method === 'GET' ? req.query : { ...req.query, ...(req.body || {}) };
@@ -619,8 +853,16 @@ async function openViaSocks(proxyUrl, destHost, destPort) {
 // ---------------------------------------------------------------- boot
 
 loadStore();
+// seed subscription URLs from env (Railway Variables), then schedule everything
+for (const u of parseUrlList(SUBSCRIPTION_URLS)) {
+  try { addSource(u, {}); } catch (e) { console.error('[sub] bad seed URL:', u, e.message); }
+}
+rescheduleAllSources();
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`[railgate] listening on :${PORT} — ${proxies.length} proxies loaded` +
+  console.log(`[railgate] listening on :${PORT} — ${proxies.length} proxies, ${sources.length} sources loaded` +
     (GATEWAY_KEY ? ' — auth ON' : ' — auth OFF (set GATEWAY_KEY to protect)'));
   if (proxies.length) checkAll();
+  // first subscription fetch shortly after boot (staggered, non-blocking)
+  sources.forEach((s, i) => setTimeout(() => fetchSubscription(s).catch(() => {}),
+    5000 + i * 5000).unref?.());
 });
