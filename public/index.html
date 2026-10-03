@@ -1,161 +1,676 @@
 <!DOCTYPE html>
-<html lang="fa" dir="rtl">
+<html lang="en" dir="ltr">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RailGate — گیت‌وی چرخشی پروکسی</title>
+<title>RailGate — Rotating Proxy Gateway</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚂</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Vazirmatn:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
 <style>
-  :root { --bg:#0f172a; --card:#1e293b; --line:#334155; --txt:#e2e8f0; --mut:#94a3b8; --acc:#38bdf8; --ok:#22c55e; --bad:#ef4444; --warn:#f59e0b; }
-  * { box-sizing:border-box; font-family:Tahoma,sans-serif; }
-  body { background:var(--bg); color:var(--txt); margin:0; padding:20px; max-width:900px; margin-inline:auto; }
-  h1 { font-size:1.4rem; } h1 span { color:var(--acc); }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:16px; }
-  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
-  input[type=text], input[type=password], textarea { background:#0b1220; color:var(--txt); border:1px solid var(--line); border-radius:8px; padding:10px; width:100%; }
-  textarea { min-height:120px; direction:ltr; text-align:left; font-family:monospace; }
-  button { background:var(--acc); color:#04121d; border:none; border-radius:8px; padding:10px 18px; font-weight:bold; cursor:pointer; }
-  button.ghost { background:transparent; color:var(--acc); border:1px solid var(--acc); }
-  button.danger { background:transparent; color:var(--bad); border:1px solid var(--bad); }
-  button:disabled { opacity:.5; }
-  .stat { display:flex; gap:16px; flex-wrap:wrap; }
-  .stat div { background:#0b1220; border:1px solid var(--line); border-radius:8px; padding:10px 16px; }
-  .stat b { color:var(--acc); font-size:1.2rem; }
-  table { width:100%; border-collapse:collapse; font-size:.8rem; direction:ltr; }
-  th,td { border-bottom:1px solid var(--line); padding:8px; text-align:left; }
-  .dot { display:inline-block; width:10px; height:10px; border-radius:50%; }
-  .ok{background:var(--ok)} .bad{background:var(--bad)} .na{background:var(--mut)}
-  code { background:#0b1220; padding:2px 6px; border-radius:6px; direction:ltr; display:inline-block; font-size:.8rem; }
-  .mut { color:var(--mut); font-size:.85rem; }
-  #log { max-height:180px; overflow:auto; direction:ltr; text-align:left; font-family:monospace; font-size:.78rem; background:#0b1220; border-radius:8px; padding:10px; }
+  :root{
+    --background:222 47% 5%; --foreground:213 31% 91%;
+    --card:222 47% 8%; --card2:222 47% 10%;
+    --border:217 32% 17%; --input:217 32% 13%;
+    --muted:215 20% 55%; --primary:199 89% 60%; --primary-fg:222 47% 5%;
+    --success:142 71% 45%; --destructive:0 72% 55%; --warning:38 92% 55%;
+    --ring:199 89% 60%;
+  }
+  *{ box-sizing:border-box; }
+  html{ scroll-behavior:smooth; }
+  body{
+    background:hsl(var(--background)); color:hsl(var(--foreground));
+    font-family:'Inter','Vazirmatn',system-ui,sans-serif;
+    min-height:100vh; margin:0;
+  }
+  body::before{
+    content:''; position:fixed; inset:0; z-index:-1; pointer-events:none;
+    background:
+      radial-gradient(600px 320px at 15% -5%, hsl(199 89% 60% / .10), transparent 60%),
+      radial-gradient(700px 380px at 90% 0%, hsl(262 83% 65% / .10), transparent 60%),
+      radial-gradient(500px 500px at 50% 110%, hsl(142 71% 45% / .06), transparent 60%);
+  }
+  .mono{ font-family:'JetBrains Mono',monospace; }
+  /* ---- shadcn-style primitives ---- */
+  .card{ background:hsl(var(--card)); border:1px solid hsl(var(--border)); border-radius:.75rem;
+    box-shadow:0 1px 2px hsl(0 0% 0% / .4); }
+  .card-hd{ padding:1.25rem 1.25rem 0; }
+  .card-title{ font-size:.95rem; font-weight:600; letter-spacing:-.01em; }
+  .card-desc{ font-size:.8rem; color:hsl(var(--muted)); margin-top:.25rem; }
+  .card-bd{ padding:1.25rem; }
+  .btn{ display:inline-flex; align-items:center; justify-content:center; gap:.5rem;
+    font-size:.825rem; font-weight:500; border-radius:.5rem; padding:.55rem 1rem;
+    border:1px solid transparent; cursor:pointer; transition:all .15s;
+    white-space:nowrap; }
+  .btn:disabled{ opacity:.5; pointer-events:none; }
+  .btn-primary{ background:hsl(var(--primary)); color:hsl(var(--primary-fg)); font-weight:600; }
+  .btn-primary:hover{ background:hsl(199 89% 68%); box-shadow:0 0 20px hsl(199 89% 60% / .35); }
+  .btn-secondary{ background:hsl(var(--card2)); color:hsl(var(--foreground)); border-color:hsl(var(--border)); }
+  .btn-secondary:hover{ border-color:hsl(var(--primary)); color:hsl(var(--primary)); }
+  .btn-outline{ background:transparent; border-color:hsl(var(--border)); color:hsl(var(--foreground)); }
+  .btn-outline:hover{ background:hsl(var(--card2)); }
+  .btn-destructive{ background:transparent; border-color:hsl(var(--destructive) / .5); color:hsl(var(--destructive)); }
+  .btn-destructive:hover{ background:hsl(var(--destructive) / .12); }
+  .btn-ghost{ background:transparent; color:hsl(var(--muted)); }
+  .btn-ghost:hover{ color:hsl(var(--foreground)); background:hsl(var(--card2)); }
+  .btn-sm{ padding:.35rem .7rem; font-size:.75rem; }
+  .input,.textarea{ width:100%; background:hsl(var(--input)); border:1px solid hsl(var(--border));
+    border-radius:.5rem; padding:.6rem .8rem; font-size:.85rem; color:hsl(var(--foreground));
+    outline:none; transition:border-color .15s, box-shadow .15s; }
+  .input:focus,.textarea:focus{ border-color:hsl(var(--ring)); box-shadow:0 0 0 3px hsl(var(--ring) / .15); }
+  .input::placeholder,.textarea::placeholder{ color:hsl(var(--muted) / .7); }
+  .badge{ display:inline-flex; align-items:center; gap:.35rem; font-size:.7rem; font-weight:600;
+    border-radius:999px; padding:.2rem .65rem; border:1px solid; }
+  .badge-ok{ color:hsl(var(--success)); border-color:hsl(var(--success) / .4); background:hsl(var(--success) / .1); }
+  .badge-bad{ color:hsl(var(--destructive)); border-color:hsl(var(--destructive) / .4); background:hsl(var(--destructive) / .1); }
+  .badge-mut{ color:hsl(var(--muted)); border-color:hsl(var(--border)); background:hsl(var(--card2)); }
+  .badge-info{ color:hsl(var(--primary)); border-color:hsl(var(--primary) / .4); background:hsl(var(--primary) / .1); }
+  .badge-warn{ color:hsl(var(--warning)); border-color:hsl(var(--warning) / .4); background:hsl(var(--warning) / .1); }
+  .dot{ width:8px; height:8px; border-radius:50%; }
+  .dot-ok{ background:hsl(var(--success)); box-shadow:0 0 8px hsl(var(--success)); }
+  .dot-bad{ background:hsl(var(--destructive)); box-shadow:0 0 8px hsl(var(--destructive)); }
+  .dot-mut{ background:hsl(var(--muted)); }
+  .dot-pulse{ animation:pulse 1.6s infinite; }
+  @keyframes pulse{ 50%{ opacity:.35; } }
+  table.data{ width:100%; border-collapse:collapse; font-size:.8rem; }
+  table.data th{ text-align:start; font-weight:500; color:hsl(var(--muted)); font-size:.72rem;
+    text-transform:uppercase; letter-spacing:.05em; padding:.6rem .8rem; border-bottom:1px solid hsl(var(--border)); }
+  table.data td{ padding:.7rem .8rem; border-bottom:1px solid hsl(var(--border) / .6); vertical-align:middle; }
+  table.data tbody tr{ transition:background .12s; }
+  table.data tbody tr:hover{ background:hsl(var(--card2)); }
+  .tabs{ display:flex; gap:.25rem; background:hsl(var(--input)); border:1px solid hsl(var(--border));
+    border-radius:.6rem; padding:.25rem; width:fit-content; max-width:100%; overflow-x:auto; }
+  .tab{ padding:.5rem 1.1rem; font-size:.82rem; font-weight:500; border-radius:.4rem; cursor:pointer;
+    color:hsl(var(--muted)); border:none; background:transparent; white-space:nowrap; }
+  .tab:hover{ color:hsl(var(--foreground)); }
+  .tab.active{ background:hsl(var(--card2)); color:hsl(var(--foreground)); box-shadow:0 1px 3px hsl(0 0% 0% / .5); }
+  .seg{ display:flex; background:hsl(var(--input)); border:1px solid hsl(var(--border)); border-radius:.5rem; padding:2px; }
+  .seg button{ border:none; background:transparent; color:hsl(var(--muted)); font-size:.75rem;
+    font-weight:600; padding:.35rem .8rem; border-radius:.35rem; cursor:pointer; }
+  .seg button.active{ background:hsl(var(--primary)); color:hsl(var(--primary-fg)); }
+  .toast{ background:hsl(var(--card2)); border:1px solid hsl(var(--border)); border-radius:.6rem;
+    padding:.7rem .9rem; font-size:.8rem; box-shadow:0 8px 30px hsl(0 0% 0% / .5);
+    animation:slidein .25s ease; max-width:340px; }
+  @keyframes slidein{ from{ transform:translateY(10px); opacity:0; } }
+  .skel{ background:linear-gradient(90deg, hsl(var(--card2)) 25%, hsl(var(--border) / .5) 50%, hsl(var(--card2)) 75%);
+    background-size:200% 100%; animation:sk 1.2s infinite; border-radius:.4rem; }
+  @keyframes sk{ to{ background-position:-200% 0; } }
+  .spin{ width:14px; height:14px; border:2px solid hsl(var(--primary-fg) / .4); border-top-color:hsl(var(--primary-fg));
+    border-radius:50%; animation:rot .7s linear infinite; display:inline-block; }
+  .spin.light{ border-color:hsl(var(--primary) / .3); border-top-color:hsl(var(--primary)); }
+  @keyframes rot{ to{ transform:rotate(360deg); } }
+  .codebox{ background:hsl(222 47% 4%); border:1px solid hsl(var(--border)); border-radius:.6rem;
+    padding:.8rem 1rem; font-size:.76rem; overflow-x:auto; }
+  .navlink{ display:flex; align-items:center; gap:.7rem; padding:.6rem .8rem; border-radius:.55rem;
+    font-size:.85rem; color:hsl(var(--muted)); text-decoration:none; border:1px solid transparent; }
+  .navlink:hover{ color:hsl(var(--foreground)); background:hsl(var(--card2)); }
+  .navlink.active{ color:hsl(var(--primary)); background:hsl(var(--primary) / .08); border-color:hsl(var(--primary) / .25); }
+  .dialog-bg{ position:fixed; inset:0; background:hsl(0 0% 0% / .7); backdrop-filter:blur(4px);
+    display:flex; align-items:center; justify-content:center; z-index:60; padding:1rem; }
+  .dropzone{ border:1.5px dashed hsl(var(--border)); border-radius:.6rem; padding:1.6rem 1rem;
+    text-align:center; cursor:pointer; transition:all .15s; }
+  .dropzone:hover,.dropzone.over{ border-color:hsl(var(--primary)); background:hsl(var(--primary) / .05); }
+  ::-webkit-scrollbar{ width:8px; height:8px; }
+  ::-webkit-scrollbar-thumb{ background:hsl(var(--border)); border-radius:4px; }
+  .stat-ic{ width:38px; height:38px; border-radius:.6rem; display:flex; align-items:center;
+    justify-content:center; font-size:1.15rem; flex-shrink:0; }
+  [dir="rtl"] .ltr{ direction:ltr; unicode-bidi:embed; }
+  .prog{ height:8px; border-radius:99px; background:hsl(var(--input)); overflow:hidden; }
+  .prog > div{ height:100%; border-radius:99px; background:linear-gradient(90deg, hsl(var(--success)), hsl(var(--primary)));
+    transition:width .6s ease; }
 </style>
 </head>
 <body>
-<h1>🚂 Rail<span>Gate</span> — گیت‌وی چرخشی پروکسی</h1>
 
-<div class="card">
-  <div class="row">
-    <input type="password" id="key" placeholder="GATEWAY_KEY (اگر ست شده)" style="max-width:300px">
-    <button class="ghost" onclick="refresh()">🔄 بروزرسانی</button>
+<!-- ======================= SIDEBAR ======================= -->
+<aside class="hidden lg:flex flex-col fixed inset-y-0 start-0 w-60 border-e p-4 gap-1" style="border-color:hsl(var(--border));background:hsl(var(--card) / .6);backdrop-filter:blur(12px);z-index:40;">
+  <div class="flex items-center gap-3 px-2 py-3">
+    <div class="stat-ic" style="background:hsl(var(--primary) / .12);font-size:1.5rem;">🚂</div>
+    <div>
+      <div class="font-extrabold tracking-tight" style="font-size:1.05rem;">Rail<span style="color:hsl(var(--primary));">Gate</span></div>
+      <div class="text-xs" style="color:hsl(var(--muted));">proxy gateway · v1.0</div>
+    </div>
   </div>
-  <p class="mut" id="base"></p>
-  <div class="stat">
-    <div>کل پروکسی <br><b id="sTotal">–</b></div>
-    <div>سالم <br><b id="sAlive">–</b></div>
-    <div>درخواست‌ها <br><b id="sReq">–</b></div>
-    <div>خطاها <br><b id="sErr">–</b></div>
+  <nav class="flex flex-col gap-1 mt-2" id="sidenav">
+    <a class="navlink active" href="#overview">📊 <span data-i18n="nav.overview">Overview</span></a>
+    <a class="navlink" href="#proxies">📋 <span data-i18n="nav.proxies">Proxies</span></a>
+    <a class="navlink" href="#add">➕ <span data-i18n="nav.add">Add proxies</span></a>
+    <a class="navlink" href="#test">📡 <span data-i18n="nav.test">Test gateway</span></a>
+    <a class="navlink" href="#integrate">💻 <span data-i18n="nav.integrate">Integration</span></a>
+    <a class="navlink" href="#activity">🧾 <span data-i18n="nav.activity">Activity</span></a>
+  </nav>
+  <div class="mt-auto flex flex-col gap-2">
+    <div class="card p-3 flex items-center gap-2 text-xs">
+      <span class="dot dot-ok dot-pulse" id="sideDot"></span>
+      <span style="color:hsl(var(--muted));" data-i18n="side.status">Gateway online</span>
+    </div>
+    <div class="seg w-full" style="justify-content:center;">
+      <button id="langEn" onclick="setLang('en')">EN</button>
+      <button id="langFa" onclick="setLang('fa')">فارسی</button>
+    </div>
+  </div>
+</aside>
+
+<!-- ======================= MAIN ======================= -->
+<div class="lg:ms-60 min-h-screen">
+<div class="max-w-5xl mx-auto px-4 sm:px-6 pb-16">
+
+  <!-- Topbar -->
+  <header class="flex flex-wrap items-center gap-3 py-5">
+    <div class="flex items-center gap-2 lg:hidden">
+      <span style="font-size:1.4rem;">🚂</span>
+      <b>Rail<span style="color:hsl(var(--primary));">Gate</span></b>
+    </div>
+    <div class="flex items-center gap-2 card px-3 py-1.5 text-xs mono ltr" style="direction:ltr;">
+      <span class="dot dot-ok dot-pulse"></span>
+      <span id="gwUrl" style="color:hsl(var(--muted));">…</span>
+      <button class="btn-ghost btn btn-sm" onclick="copyText(this, location.origin)" data-i18n="top.copy">Copy</button>
+    </div>
+    <div class="ms-auto flex items-center gap-2">
+      <div class="seg lg:hidden">
+        <button id="langEnM" onclick="setLang('en')">EN</button>
+        <button id="langFaM" onclick="setLang('fa')">فا</button>
+      </div>
+      <span class="badge badge-mut" id="authBadge">🔓 <span data-i18n="top.noauth">open</span></span>
+      <button class="btn btn-secondary btn-sm" onclick="refresh(true)">↻ <span data-i18n="top.refresh">Refresh</span></button>
+    </div>
+  </header>
+
+  <!-- Hero -->
+  <section id="overview" class="card mb-5" style="background:linear-gradient(135deg, hsl(var(--card)) 0%, hsl(262 60% 12%) 100%);">
+    <div class="card-bd flex flex-col md:flex-row md:items-center gap-4">
+      <div class="flex-1">
+        <h1 class="font-extrabold tracking-tight" style="font-size:1.5rem;" data-i18n="hero.title">Rotating proxy gateway</h1>
+        <p class="text-sm mt-1" style="color:hsl(var(--muted));" data-i18n="hero.sub">Pool HTTP / HTTPS / SOCKS upstreams behind one URL — health-checked, speed-weighted, with failover & sticky sessions.</p>
+        <div class="flex flex-wrap gap-2 mt-3">
+          <span class="badge badge-info mono ltr">GET /fetch?url=…</span>
+          <span class="badge badge-info mono ltr">curl -x $APP …</span>
+          <span class="badge badge-mut mono ltr">?session=ID</span>
+        </div>
+      </div>
+      <div class="w-full md:w-72">
+        <label class="text-xs font-medium" style="color:hsl(var(--muted));" data-i18n="hero.key">Gateway key (GATEWAY_KEY)</label>
+        <input type="password" id="key" class="input mono mt-1 ltr" style="direction:ltr;" placeholder="••••••••">
+        <p class="text-xs mt-1" style="color:hsl(var(--muted));" data-i18n="hero.keyhint">Leave empty if the server has no key set.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Stats -->
+  <section class="grid grid-cols-2 xl:grid-cols-4 gap-3 mb-5">
+    <div class="card"><div class="card-bd flex items-center gap-3">
+      <div class="stat-ic" style="background:hsl(var(--primary) / .12);">🗄️</div>
+      <div><div class="text-xs" style="color:hsl(var(--muted));" data-i18n="st.total">Total proxies</div>
+      <div class="font-extrabold" style="font-size:1.4rem;" id="sTotal">–</div></div>
+    </div></div>
+    <div class="card"><div class="card-bd flex items-center gap-3">
+      <div class="stat-ic" style="background:hsl(var(--success) / .12);">💚</div>
+      <div><div class="text-xs" style="color:hsl(var(--muted));" data-i18n="st.alive">Alive</div>
+      <div class="font-extrabold" style="font-size:1.4rem;color:hsl(var(--success));" id="sAlive">–</div></div>
+    </div></div>
+    <div class="card"><div class="card-bd flex items-center gap-3">
+      <div class="stat-ic" style="background:hsl(262 83% 65% / .12);">⚡</div>
+      <div><div class="text-xs" style="color:hsl(var(--muted));" data-i18n="st.req">Requests</div>
+      <div class="font-extrabold" style="font-size:1.4rem;" id="sReq">–</div></div>
+    </div></div>
+    <div class="card"><div class="card-bd flex items-center gap-3">
+      <div class="stat-ic" style="background:hsl(var(--destructive) / .12);">⚠️</div>
+      <div><div class="text-xs" style="color:hsl(var(--muted));" data-i18n="st.err">Errors</div>
+      <div class="font-extrabold" style="font-size:1.4rem;" id="sErr">–</div></div>
+    </div></div>
+  </section>
+
+  <!-- Pool health -->
+  <section class="card mb-5"><div class="card-bd flex flex-col sm:flex-row sm:items-center gap-3">
+    <div class="text-sm font-medium whitespace-nowrap" data-i18n="pool.health">Pool health</div>
+    <div class="prog flex-1"><div id="healthBar" style="width:0%"></div></div>
+    <div class="text-xs mono" style="color:hsl(var(--muted));" id="healthTxt">–</div>
+    <button class="btn btn-outline btn-sm" id="checkBtn" onclick="checkNow()">✅ <span data-i18n="pool.check">Check now</span></button>
+  </div></section>
+
+  <!-- Tabs -->
+  <div class="tabs mb-4" id="proxies">
+    <button class="tab active" data-tab="tProxies" onclick="switchTab('tProxies')">📋 <span data-i18n="tab.proxies">Proxies</span></button>
+    <button class="tab" data-tab="tAdd" onclick="switchTab('tAdd')">➕ <span data-i18n="tab.add">Add</span></button>
+    <button class="tab" data-tab="tTest" onclick="switchTab('tTest')">📡 <span data-i18n="tab.test">Test</span></button>
+    <button class="tab" data-tab="tDocs" onclick="switchTab('tDocs')">💻 <span data-i18n="tab.docs">Integrate</span></button>
+  </div>
+
+  <!-- Proxies -->
+  <section id="tProxies" class="tabpanel card mb-5">
+    <div class="card-hd flex flex-wrap items-center gap-2">
+      <div><div class="card-title" data-i18n="px.title">Upstream proxies</div>
+      <div class="card-desc" data-i18n="px.sub">Live status, latency and usage per upstream. Passwords are never shown.</div></div>
+      <div class="ms-auto flex flex-wrap items-center gap-2">
+        <input id="search" class="input ltr" style="width:190px;direction:ltr;" placeholder="Search…" oninput="renderTable()">
+        <div class="seg" id="filterSeg">
+          <button data-f="all" class="active" onclick="setFilter('all')" data-i18n="px.all">All</button>
+          <button data-f="alive" onclick="setFilter('alive')" data-i18n="px.alive">Alive</button>
+          <button data-f="dead" onclick="setFilter('dead')" data-i18n="px.dead">Dead</button>
+        </div>
+        <button class="btn btn-destructive btn-sm" onclick="openDialog()" data-i18n="px.clear">Clear all</button>
+      </div>
+    </div>
+    <div class="card-bd" id="add">
+      <div style="overflow-x:auto;">
+      <table class="data ltr" style="direction:ltr;">
+        <thead><tr>
+          <th data-i18n="th.status">Status</th><th data-i18n="th.proxy">Proxy</th><th>Proto</th>
+          <th data-i18n="th.latency">Latency</th><th>OK / Fail</th><th data-i18n="th.used">Last used</th><th></th>
+        </tr></thead>
+        <tbody id="rows">
+          <tr><td colspan="7"><div class="skel" style="height:38px;"></div><div class="skel mt-2" style="height:38px;"></div><div class="skel mt-2" style="height:38px;"></div></td></tr>
+        </tbody>
+      </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- Add -->
+  <section id="tAdd" class="tabpanel card mb-5 hidden">
+    <div class="card-hd"><div class="card-title" data-i18n="ad.title">Add proxies</div>
+      <div class="card-desc mono ltr" style="direction:ltr;">http://user:pass@host:port · https://… · socks4://… · socks5://… · host:port</div></div>
+    <div class="card-bd flex flex-col gap-3">
+      <textarea id="plist" rows="6" class="textarea mono ltr" style="direction:ltr;" placeholder="socks5://user:pass@1.2.3.4:1080&#10;http://5.6.7.8:8080"></textarea>
+      <div class="flex flex-wrap items-center gap-2">
+        <button class="btn btn-primary" id="addBtn" onclick="addProxies(false)">➕ <span data-i18n="ad.add">Add to pool</span></button>
+        <button class="btn btn-secondary" onclick="addProxies(true)">🔁 <span data-i18n="ad.replace">Replace pool</span></button>
+        <span class="text-xs mono ms-auto" style="color:hsl(var(--muted));" id="lineCount">0 lines</span>
+      </div>
+      <div class="flex items-center gap-3 text-xs" style="color:hsl(var(--muted));">
+        <span style="flex:1;height:1px;background:hsl(var(--border));"></span><span data-i18n="ad.or">or upload a file</span><span style="flex:1;height:1px;background:hsl(var(--border));"></span>
+      </div>
+      <div class="dropzone" id="dz" onclick="document.getElementById('file').click()">
+        <div style="font-size:1.6rem;">📁</div>
+        <div class="text-sm font-medium" data-i18n="ad.drop">Drop a .txt file here or click to browse</div>
+        <div class="text-xs mt-1" style="color:hsl(var(--muted));" data-i18n="ad.drop2">One proxy per line · max 1 MB</div>
+        <input type="file" id="file" accept=".txt,.csv" class="hidden" onchange="uploadFile()">
+      </div>
+    </div>
+  </section>
+
+  <!-- Test -->
+  <section id="tTest" class="tabpanel card mb-5 hidden">
+    <div class="card-hd" id="test"><div class="card-title" data-i18n="te.title">Test via gateway</div>
+      <div class="card-desc" data-i18n="te.sub">The request exits through a rotated upstream — the exit IP is the proxy's, not Railway's.</div></div>
+    <div class="card-bd flex flex-col gap-3">
+      <div class="flex flex-col sm:flex-row gap-2">
+        <input id="turl" class="input mono ltr flex-1" style="direction:ltr;" value="https://api.ipify.org" dir="ltr">
+        <input id="tsession" class="input mono ltr" style="width:170px;direction:ltr;" placeholder="session (optional)" dir="ltr">
+        <button class="btn btn-primary" id="sendBtn" onclick="testFetch()">➤ <span data-i18n="te.send">Send</span></button>
+      </div>
+      <div class="flex flex-wrap gap-2" id="quickTargets">
+        <button class="btn btn-ghost btn-sm mono" onclick="quickTest('https://api.ipify.org')">api.ipify.org</button>
+        <button class="btn btn-ghost btn-sm mono" onclick="quickTest('https://ifconfig.me/ip')">ifconfig.me</button>
+        <button class="btn btn-ghost btn-sm mono" onclick="quickTest('https://example.com')">example.com</button>
+      </div>
+      <div id="tresult" class="hidden card p-4" style="background:hsl(222 47% 4%);">
+        <div class="flex flex-wrap items-center gap-2 text-xs">
+          <span class="badge badge-ok mono" id="tStatus">200</span>
+          <span style="color:hsl(var(--muted));">via</span>
+          <span class="mono ltr" id="tVia" style="color:hsl(var(--primary));direction:ltr;">–</span>
+          <span class="badge badge-mut mono" id="tLat">–</span>
+        </div>
+        <pre class="mono mt-3 text-xs ltr" id="tBody" style="direction:ltr;white-space:pre-wrap;word-break:break-all;color:hsl(var(--foreground));max-height:220px;overflow:auto;margin-bottom:0;"></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- Integrate -->
+  <section id="tDocs" class="tabpanel card mb-5 hidden">
+    <div class="card-hd" id="integrate"><div class="card-title" data-i18n="in.title">Integration</div>
+      <div class="card-desc" data-i18n="in.sub">Two ways in — pick what fits your client.</div></div>
+    <div class="card-bd flex flex-col gap-3">
+      <div>
+        <div class="flex items-center gap-2 mb-2">
+          <span class="badge badge-info">A</span>
+          <b class="text-sm" data-i18n="in.a">Fetch API — simplest</b>
+          <button class="btn btn-ghost btn-sm ms-auto" onclick="copyText(this, fetchSnippet())">⧉ <span data-i18n="top.copy">Copy</span></button>
+        </div>
+        <div class="codebox mono ltr" style="direction:ltr;" id="snipFetch"></div>
+      </div>
+      <div>
+        <div class="flex items-center gap-2 mb-2">
+          <span class="badge badge-info">B</span>
+          <b class="text-sm" data-i18n="in.b">Sticky session — one fixed exit IP</b>
+          <button class="btn btn-ghost btn-sm ms-auto" onclick="copyText(this, stickySnippet())">⧉ <span data-i18n="top.copy">Copy</span></button>
+        </div>
+        <div class="codebox mono ltr" style="direction:ltr;" id="snipSticky"></div>
+      </div>
+      <div>
+        <div class="flex items-center gap-2 mb-2">
+          <span class="badge badge-info">C</span>
+          <b class="text-sm" data-i18n="in.c">HTTP forward proxy — incl. CONNECT for https</b>
+          <button class="btn btn-ghost btn-sm ms-auto" onclick="copyText(this, proxySnippet())">⧉ <span data-i18n="top.copy">Copy</span></button>
+        </div>
+        <div class="codebox mono ltr" style="direction:ltr;" id="snipProxy"></div>
+        <p class="text-xs mt-2" style="color:hsl(var(--muted));" data-i18n="inchnote">Sticky here: send header X-Proxy-Session: ID. With a key: curl -x https://user:KEY@host …</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Activity -->
+  <section class="card mb-8" id="activity">
+    <div class="card-hd flex items-center gap-2">
+      <div><div class="card-title" data-i18n="ac.title">Activity</div>
+      <div class="card-desc" data-i18n="ac.sub">Latest operations on this gateway.</div></div>
+      <button class="btn btn-ghost btn-sm ms-auto" onclick="document.getElementById('log').innerHTML=''" data-i18n="ac.clear">Clear</button>
+    </div>
+    <div class="card-bd"><div id="log" class="mono ltr text-xs" style="direction:ltr;max-height:200px;overflow:auto;display:flex;flex-direction:column;gap:.35rem;">
+      <span style="color:hsl(var(--muted));">—</span>
+    </div></div>
+  </section>
+
+  <footer class="text-center text-xs pb-4" style="color:hsl(var(--muted));">
+    RailGate · MIT · <a href="/health" class="mono" style="color:hsl(var(--primary));">/health</a> · <a href="https://github.com/arynull/railgate" style="color:hsl(var(--primary));">GitHub</a>
+  </footer>
+</div>
+</div>
+
+<!-- Dialog -->
+<div id="dlg" class="dialog-bg hidden">
+  <div class="card p-5" style="max-width:380px;width:100%;">
+    <b data-i18n="dg.title">Remove all proxies?</b>
+    <p class="text-sm mt-1" style="color:hsl(var(--muted));" data-i18n="dg.sub">The whole pool will be deleted. This cannot be undone.</p>
+    <div class="flex justify-end gap-2 mt-4">
+      <button class="btn btn-outline btn-sm" onclick="closeDialog()" data-i18n="dg.cancel">Cancel</button>
+      <button class="btn btn-destructive btn-sm" onclick="closeDialog();clearAll()" data-i18n="dg.yes">Delete all</button>
+    </div>
   </div>
 </div>
 
-<div class="card">
-  <h3>➕ افزودن پروکسی</h3>
-  <p class="mut">هر خط یک پروکسی: <code>http://user:pass@host:port</code> ، <code>https://...</code> ، <code>socks5://...</code> ، <code>socks4://...</code> — یا فقط <code>host:port</code></p>
-  <textarea id="plist" placeholder="socks5://user:pass@1.2.3.4:1080&#10;http://5.6.7.8:8080"></textarea>
-  <div class="row" style="margin-top:10px">
-    <button onclick="addProxies(false)">افزودن</button>
-    <button class="ghost" onclick="addProxies(true)">جایگزین کل لیست</button>
-    <input type="file" id="file" accept=".txt,.csv" style="max-width:220px">
-    <button class="ghost" onclick="uploadFile()">آپلود فایل</button>
-    <button class="ghost" onclick="checkNow()">✅ تست سلامت الان</button>
-  </div>
-</div>
-
-<div class="card">
-  <h3>📡 تست از طریق گیت‌وی</h3>
-  <div class="row">
-    <input type="text" id="turl" value="https://api.ipify.org" style="flex:1;min-width:200px;direction:ltr">
-    <button onclick="testFetch()">ارسال</button>
-  </div>
-  <p class="mut" id="tout"></p>
-</div>
-
-<div class="card">
-  <h3>📋 پروکسی‌ها <button class="danger" onclick="clearAll()" style="padding:4px 10px">حذف همه</button></h3>
-  <div style="overflow:auto"><table>
-    <thead><tr><th></th><th>proxy</th><th>proto</th><th>latency</th><th>ok/fail</th><th>last used</th><th></th></tr></thead>
-    <tbody id="rows"></tbody>
-  </table></div>
-</div>
-
-<div class="card">
-  <h3>💻 نحوه استفاده</h3>
-  <p class="mut">۱) Fetch API (ساده):</p>
-  <code id="ex1"></code>
-  <p class="mut">۲) HTTP Forward Proxy (با curl):</p>
-  <code id="ex2"></code>
-  <p class="mut">۳) سشن چسبان (یک IP ثابت برای چند درخواست): <code>?session=USER123</code> به انتهای هر دو مدل اضافه کن.</p>
-  <div id="log"></div>
-</div>
+<!-- Toasts -->
+<div id="toasts" class="fixed bottom-4 end-4 flex flex-col gap-2" style="z-index:70;"></div>
 
 <script>
+/* ============================== i18n ============================== */
+const I18N = {
+en:{ 'nav.overview':'Overview','nav.proxies':'Proxies','nav.add':'Add proxies','nav.test':'Test gateway','nav.integrate':'Integration','nav.activity':'Activity',
+'side.status':'Gateway online','top.copy':'Copy','top.copied':'Copied to clipboard','top.refresh':'Refresh','top.noauth':'open','top.locked':'locked',
+'hero.title':'Rotating proxy gateway','hero.sub':'Pool HTTP / HTTPS / SOCKS upstreams behind one URL — health-checked, speed-weighted, with failover & sticky sessions.',
+'hero.key':'Gateway key (GATEWAY_KEY)','hero.keyhint':'Leave empty if the server has no key set.',
+'st.total':'Total proxies','st.alive':'Alive','st.req':'Requests','st.err':'Errors',
+'pool.health':'Pool health','pool.check':'Check now','pool.checking':'Checking…',
+'tab.proxies':'Proxies','tab.add':'Add','tab.test':'Test','tab.docs':'Integrate',
+'px.title':'Upstream proxies','px.sub':'Live status, latency and usage per upstream. Passwords are never shown.',
+'px.all':'All','px.alive':'Alive','px.dead':'Dead','px.clear':'Clear all',
+'th.status':'Status','th.proxy':'Proxy','th.latency':'Latency','th.used':'Last used',
+'ad.title':'Add proxies','ad.add':'Add to pool','ad.replace':'Replace pool','ad.or':'or upload a file',
+'ad.drop':'Drop a .txt file here or click to browse','ad.drop2':'One proxy per line · max 1 MB',
+'te.title':'Test via gateway','te.sub':"The request exits through a rotated upstream — the exit IP is the proxy's, not Railway's.",
+'te.send':'Send','te.sending':'Sending…',
+'in.title':'Integration','in.sub':'Two ways in — pick what fits your client.',
+'in.a':'Fetch API — simplest','in.b':'Sticky session — one fixed exit IP','in.c':'HTTP forward proxy — incl. CONNECT for https',
+'inchnote':'Sticky here: send header X-Proxy-Session: ID. With a key: curl -x https://user:KEY@host …',
+'ac.title':'Activity','ac.sub':'Latest operations on this gateway.','ac.clear':'Clear',
+'dg.title':'Remove all proxies?','dg.sub':'The whole pool will be deleted. This cannot be undone.','dg.cancel':'Cancel','dg.yes':'Delete all',
+'row.alive':'alive','row.dead':'dead','row.unknown':'unknown','row.empty':'Empty — add proxies in the Add tab',
+'msg.added':'proxies added','msg.replaced':'pool replaced','msg.cleared':'pool cleared','msg.removed':'removed','msg.checked':'health check done',
+'msg.needkey':'Set the gateway key first','msg.needlist':'Paste at least one proxy','msg.needfile':'Choose a file first','msg.badfile':'Upload failed',
+'msg.testfail':'Request failed','msg.offline':'Gateway unreachable'},
+fa:{ 'nav.overview':'نمای کلی','nav.proxies':'پروکسی‌ها','nav.add':'افزودن پروکسی','nav.test':'تست گیت‌وی','nav.integrate':'اتصال','nav.activity':'فعالیت‌ها',
+'side.status':'گیت‌وی آنلاین','top.copy':'کپی','top.copied':'کپی شد','top.refresh':'بروزرسانی','top.noauth':'بدون کلید','top.locked':'محافظت‌شده',
+'hero.title':'گیت‌وی چرخشی پروکسی','hero.sub':'تجمیع پروکسی‌های HTTP / HTTPS / SOCKS پشت یک آدرس — با تست سلامت، وزن‌دهی سرعتی، failover و سشن چسبان.',
+'hero.key':'کلید گیت‌وی (GATEWAY_KEY)','hero.keyhint':'اگر سرور کلید ندارد خالی بگذار.',
+'st.total':'کل پروکسی‌ها','st.alive':'سالم','st.req':'درخواست‌ها','st.err':'خطاها',
+'pool.health':'سلامت استخر','pool.check':'تست سلامت','pool.checking':'در حال تست…',
+'tab.proxies':'پروکسی‌ها','tab.add':'افزودن','tab.test':'تست','tab.docs':'اتصال',
+'px.title':'پروکسی‌های ورودی','px.sub':'وضعیت زنده، تأخیر و مصرف هر پروکسی. رمزها هرگز نمایش داده نمی‌شوند.',
+'px.all':'همه','px.alive':'سالم','px.dead':'خراب','px.clear':'حذف همه',
+'th.status':'وضعیت','th.proxy':'پروکسی','th.latency':'تأخیر','th.used':'آخرین استفاده',
+'ad.title':'افزودن پروکسی','ad.add':'افزودن به استخر','ad.replace':'جایگزینی استخر','ad.or':'یا آپلود فایل',
+'ad.drop':'فایل .txt را اینجا رها کن یا کلیک کن','ad.drop2':'هر خط یک پروکسی · حداکثر ۱ مگابایت',
+'te.title':'تست از طریق گیت‌وی','te.sub':'درخواست از یک پروکسی چرخشی خارج می‌شود — IP خروجی مال پروکسی است نه Railway.',
+'te.send':'ارسال','te.sending':'در حال ارسال…',
+'in.title':'اتصال','in.sub':'دو راه ورود — هر کدام که به کارت می‌آید.',
+'in.a':'Fetch API — ساده‌ترین','in.b':'سشن چسبان — یک IP ثابت','in.c':'فوروارد پروکسی HTTP — با CONNECT برای https',
+'inchnote':'سشن چسبان اینجا: هدر X-Proxy-Session بفرست. با کلید: curl -x https://user:KEY@host …',
+'ac.title':'فعالیت‌ها','ac.sub':'آخرین عملیات روی این گیت‌وی.','ac.clear':'پاک کردن',
+'dg.title':'همه پروکسی‌ها حذف شوند؟','dg.sub':'کل استخر حذف می‌شود. این کار برگشت‌ناپذیر است.','dg.cancel':'انصراف','dg.yes':'حذف همه',
+'row.alive':'سالم','row.dead':'خراب','row.unknown':'نامشخص','row.empty':'خالی — از تب افزودن پروکسی اضافه کن',
+'msg.added':'پروکسی اضافه شد','msg.replaced':'استخر جایگزین شد','msg.cleared':'استخر پاک شد','msg.removed':'حذف شد','msg.checked':'تست سلامت انجام شد',
+'msg.needkey':'اول کلید گیت‌وی را وارد کن','msg.needlist':'حداقل یک پروکسی بنویس','msg.needfile':'اول فایل انتخاب کن','msg.badfile':'آپلود ناموفق بود',
+'msg.testfail':'درخواست ناموفق بود','msg.offline':'گیت‌وی در دسترس نیست'}
+};
+let LANG = localStorage.getItem('rg-lang') || 'en';
+const t = k => (I18N[LANG] && I18N[LANG][k]) || I18N.en[k] || k;
+
+function setLang(l){
+  LANG = l; localStorage.setItem('rg-lang', l);
+  document.documentElement.lang = l;
+  document.documentElement.dir = l === 'fa' ? 'rtl' : 'ltr';
+  document.title = l === 'fa' ? 'RailGate — گیت‌وی چرخشی پروکسی' : 'RailGate — Rotating Proxy Gateway';
+  document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = t(el.dataset.i18n); });
+  for (const id of ['langEn','langEnM']) document.getElementById(id)?.classList.toggle('active', l === 'en');
+  for (const id of ['langFa','langFaM']) document.getElementById(id)?.classList.toggle('active', l === 'fa');
+  document.getElementById('search').placeholder = l === 'fa' ? 'جستجو…' : 'Search…';
+  renderSnippets(); renderTable(true);
+}
+
+/* ============================== helpers ============================== */
 const $ = id => document.getElementById(id);
 const base = location.origin;
-$('base').textContent = 'آدرس گیت‌وی: ' + base;
-$('ex1').textContent = `curl "${base}/fetch?url=https://api.ipify.org"`;
-$('ex2').textContent = `curl -x ${base.replace('http','http')} http://api.ipify.org`;
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const key = () => $('key').value.trim();
-const headers = () => ({ 'Content-Type':'application/json', ...(key()?{'x-api-key':key()}:{}) });
-function log(m){ const l=$('log'); l.innerHTML = new Date().toLocaleTimeString('fa')+' '+m+'<br>'+l.innerHTML; }
+function authHeaders(json){
+  const h = {};
+  if (json) h['Content-Type'] = 'application/json';
+  if (key()) h['x-api-key'] = key();
+  return h;
+}
+function fmtTime(ts){
+  if (!ts) return '–';
+  try { return new Date(ts).toLocaleTimeString(LANG === 'fa' ? 'fa-IR' : 'en-US', {hour:'2-digit',minute:'2-digit'}); }
+  catch { return '–'; }
+}
+function log(msg){
+  const box = $('log');
+  if (box.querySelector('span') && box.textContent.trim() === '—') box.innerHTML = '';
+  const line = document.createElement('div');
+  const time = new Date().toLocaleTimeString(LANG === 'fa' ? 'fa-IR' : 'en-US');
+  line.innerHTML = `<span style="color:hsl(var(--muted));">${time}</span> <span>${esc(msg)}</span>`;
+  box.prepend(line);
+  while (box.children.length > 60) box.lastChild.remove();
+}
+function toast(title, desc, type){
+  const colors = { ok:'hsl(var(--success))', err:'hsl(var(--destructive))', info:'hsl(var(--primary))' };
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.style.borderColor = colors[type || 'info'] + '55';
+  el.innerHTML = `<b>${esc(title)}</b>${desc ? `<div class="mt-1" style="color:hsl(var(--muted));">${esc(desc)}</div>` : ''}`;
+  $('toasts').appendChild(el);
+  setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity .3s'; setTimeout(() => el.remove(), 320); }, 3600);
+}
+async function copyText(btn, text){
+  try { await navigator.clipboard.writeText(text); toast('⧉ ' + t('top.copied'), null, 'ok'); }
+  catch { toast(text.slice(0, 80), null, 'info'); }
+}
+function switchTab(id){
+  document.querySelectorAll('.tabpanel').forEach(p => p.classList.add('hidden'));
+  $(id).classList.remove('hidden');
+  document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === id));
+  document.querySelectorAll('#sidenav .navlink').forEach(a => {
+    const map = { tProxies:'#proxies', tAdd:'#add', tTest:'#test', tDocs:'#integrate' };
+    a.classList.toggle('active', map[id] === a.getAttribute('href'));
+  });
+}
+
+/* ============================== data ============================== */
+let cache = [];
+let FILTER = 'all';
 
 async function refresh(){
-  try{
-    const [p,s] = await Promise.all([
-      fetch(base+'/api/proxies',{headers:headers()}).then(r=>r.json()),
-      fetch(base+'/api/stats',{headers:headers()}).then(r=>r.json()),
+  try {
+    const [p, s] = await Promise.all([
+      fetch(base + '/api/proxies', { headers: authHeaders() }).then(r => r.json()),
+      fetch(base + '/api/stats', { headers: authHeaders() }).then(r => r.json()),
     ]);
-    if(!p.ok){ log('⚠ '+JSON.stringify(p)); return; }
-    $('sTotal').textContent = p.count;
-    $('sAlive').textContent = s.alive ?? p.proxies.filter(x=>x.alive===true).length;
-    $('sReq').textContent = s.requests ?? 0;
-    $('sErr').textContent = s.errors ?? 0;
-    $('rows').innerHTML = p.proxies.map(x=>`<tr>
-      <td><span class="dot ${x.alive===true?'ok':x.alive===false?'bad':'na'}"></span></td>
-      <td style="font-family:monospace">${x.url}</td><td>${x.protocol}</td>
-      <td>${x.latencyMs==null?'–':x.latencyMs+'ms'}</td>
-      <td>${x.success}/${x.fail}${x.backoffSec?` ⏳${x.backoffSec}s`:''}</td>
-      <td>${x.lastUsed?new Date(x.lastUsed).toLocaleTimeString('fa'):'–'}</td>
-      <td><button class="danger" style="padding:2px 8px" onclick="delOne('${encodeURIComponent(x.url)}')">✕</button></td>
-    </tr>`).join('') || '<tr><td colspan=7 style="text-align:center">خالی — پروکسی اضافه کن</td></tr>';
-  }catch(e){ log('⚠ '+e.message); }
+    if (!p.ok) {
+      if (String(p.error || '').includes('unauthorized')) { setAuthBadge(false); toast('🔒 401', t('msg.needkey'), 'err'); }
+      else log('⚠ ' + JSON.stringify(p));
+      return;
+    }
+    setAuthBadge(true);
+    cache = p.proxies || [];
+    $('sTotal').textContent = p.count ?? cache.length;
+    const alive = (s.alive ?? cache.filter(x => x.alive === true).length);
+    $('sAlive').textContent = alive;
+    $('sReq').textContent = (s.requests ?? 0).toLocaleString(LANG === 'fa' ? 'fa-IR' : 'en-US');
+    $('sErr').textContent = (s.errors ?? 0).toLocaleString(LANG === 'fa' ? 'fa-IR' : 'en-US');
+    const pct = cache.length ? Math.round(alive / cache.length * 100) : 0;
+    $('healthBar').style.width = pct + '%';
+    $('healthTxt').textContent = `${alive}/${cache.length} · ${pct}%`;
+    renderTable();
+  } catch(e){ $('sideDot').className = 'dot dot-bad'; log('⚠ ' + t('msg.offline')); }
 }
+function setAuthBadge(known){
+  const b = $('authBadge');
+  const locked = !!key();
+  b.className = 'badge ' + (locked ? 'badge-warn' : 'badge-mut');
+  b.innerHTML = (locked ? '🔐 ' : '🔓 ') + `<span>${esc(locked ? t('top.locked') : t('top.noauth'))}</span>`;
+}
+function statusBadge(x){
+  if (x.alive === true) return `<span class="badge badge-ok"><span class="dot dot-ok"></span>${t('row.alive')}</span>`;
+  if (x.alive === false) return `<span class="badge badge-bad"><span class="dot dot-bad"></span>${t('row.dead')}${x.backoffSec ? ` · ${x.backoffSec}s` : ''}</span>`;
+  return `<span class="badge badge-mut"><span class="dot dot-mut"></span>${t('row.unknown')}</span>`;
+}
+function renderTable(keep){
+  const q = ($('search').value || '').toLowerCase();
+  const maxLat = Math.max(1, ...cache.map(x => x.latencyMs || 0));
+  const rows = cache.filter(x => {
+    if (FILTER === 'alive' && x.alive !== true) return false;
+    if (FILTER === 'dead' && x.alive !== false) return false;
+    if (q && !x.url.toLowerCase().includes(q) && !x.protocol.includes(q)) return false;
+    return true;
+  });
+  $('rows').innerHTML = rows.map(x => {
+    const lat = x.latencyMs == null ? '–' : x.latencyMs + ' ms';
+    const bar = x.latencyMs == null ? '' :
+      `<div class="prog mt-1" style="width:90px;"><div style="width:${Math.max(6, Math.round(x.latencyMs / maxLat * 100))}%"></div></div>`;
+    return `<tr>
+      <td>${statusBadge(x)}</td>
+      <td class="mono" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(x.url)}">${esc(x.url)}</td>
+      <td><span class="badge badge-mut mono">${esc(x.protocol)}</span></td>
+      <td class="mono whitespace-nowrap">${lat}${bar}</td>
+      <td class="mono whitespace-nowrap"><span style="color:hsl(var(--success));">${x.success}</span><span style="color:hsl(var(--muted));"> / </span><span style="color:${x.fail ? 'hsl(var(--destructive))' : 'hsl(var(--muted))'};">${x.fail}</span></td>
+      <td class="whitespace-nowrap" style="color:hsl(var(--muted));">${fmtTime(x.lastUsed)}</td>
+      <td><button class="btn btn-ghost btn-sm" onclick="delOne('${encodeURIComponent(x.url)}')" title="Remove">✕</button></td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="7" class="text-center py-8" style="color:hsl(var(--muted));">${t('row.empty')}</td></tr>`;
+  document.querySelectorAll('#filterSeg button').forEach(b => b.classList.toggle('active', b.dataset.f === FILTER));
+}
+function setFilter(f){ FILTER = f; renderTable(); }
+
+/* ============================== actions ============================== */
 async function addProxies(replace){
   const text = $('plist').value.trim();
-  if(!text) return alert('لیست خالیه');
-  const r = await fetch(base+'/api/proxies',{method:'POST',headers:headers(),body:JSON.stringify({text,replace})}).then(r=>r.json());
-  log('➕ '+JSON.stringify(r)); $('plist').value=''; refresh();
+  if (!text) return toast('⚠', t('msg.needlist'), 'err');
+  const btn = $('addBtn'); btn.disabled = true;
+  btn.innerHTML = '<span class="spin"></span>';
+  try {
+    const r = await fetch(base + '/api/proxies', { method:'POST', headers: authHeaders(true), body: JSON.stringify({ text, replace }) }).then(r => r.json());
+    if (r.ok) { toast(`✅ +${r.added} ${t(replace ? 'msg.replaced' : 'msg.added')}`, r.invalid?.length ? 'invalid: ' + r.invalid.length : null, 'ok'); $('plist').value = ''; $('lineCount').textContent = '0 lines'; }
+    else toast('⚠ ' + (r.error || ''), null, 'err');
+    log((replace ? '🔁' : '➕') + ' ' + JSON.stringify(r));
+  } catch(e){ toast('⚠ ' + e.message, null, 'err'); }
+  btn.disabled = false; btn.innerHTML = '➕ <span>' + t('ad.add') + '</span>';
+  refresh();
 }
 async function uploadFile(){
-  const f = $('file').files[0]; if(!f) return alert('فایل انتخاب کن');
+  const f = $('file').files[0];
+  if (!f) return toast('⚠', t('msg.needfile'), 'err');
   const fd = new FormData(); fd.append('file', f);
-  const h = key()?{'x-api-key':key()}:{};
-  const r = await fetch(base+'/api/proxies/upload',{method:'POST',headers:h,body:fd}).then(r=>r.json());
-  log('📁 '+JSON.stringify(r)); refresh();
+  const h = key() ? { 'x-api-key': key() } : {};
+  try {
+    const r = await fetch(base + '/api/proxies/upload', { method:'POST', headers: h, body: fd }).then(r => r.json());
+    if (r.ok) toast(`📁 +${r.added} ${t('msg.added')}`, null, 'ok');
+    else toast('⚠ ' + (r.error || t('msg.badfile')), null, 'err');
+    log('📁 ' + JSON.stringify(r));
+  } catch(e){ toast('⚠ ' + e.message, null, 'err'); }
+  $('file').value = '';
+  refresh();
 }
 async function checkNow(){
-  const r = await fetch(base+'/api/proxies/check',{method:'POST',headers:headers()}).then(r=>r.json());
-  log('✅ '+JSON.stringify(r)); refresh();
+  const b = $('checkBtn'); b.disabled = true;
+  b.innerHTML = '<span class="spin light"></span> ' + t('pool.checking');
+  try {
+    const r = await fetch(base + '/api/proxies/check', { method:'POST', headers: authHeaders() }).then(r => r.json());
+    toast(`✅ ${t('msg.checked')}`, JSON.stringify(r), 'ok'); log('✅ ' + JSON.stringify(r));
+  } catch(e){ toast('⚠ ' + e.message, null, 'err'); }
+  b.disabled = false; b.innerHTML = '✅ <span>' + t('pool.check') + '</span>';
+  refresh();
 }
 async function delOne(u){
-  const r = await fetch(base+'/api/proxies?url='+u,{method:'DELETE',headers:headers()}).then(r=>r.json());
-  log('🗑 '+JSON.stringify(r)); refresh();
+  try {
+    const r = await fetch(base + '/api/proxies?url=' + u, { method:'DELETE', headers: authHeaders() }).then(r => r.json());
+    toast('🗑 ' + t('msg.removed'), null, 'info'); log('🗑 ' + JSON.stringify(r));
+  } catch(e){ toast('⚠ ' + e.message, null, 'err'); }
+  refresh();
 }
+function openDialog(){ $('dlg').classList.remove('hidden'); }
+function closeDialog(){ $('dlg').classList.add('hidden'); }
 async function clearAll(){
-  if(!confirm('همه پروکسی‌ها حذف بشن؟')) return;
-  const r = await fetch(base+'/api/proxies?clear=1',{method:'DELETE',headers:headers()}).then(r=>r.json());
-  log('🗑 '+JSON.stringify(r)); refresh();
+  try {
+    const r = await fetch(base + '/api/proxies?clear=1', { method:'DELETE', headers: authHeaders() }).then(r => r.json());
+    toast('🗑 ' + t('msg.cleared'), null, 'info'); log('🗑 ' + JSON.stringify(r));
+  } catch(e){ toast('⚠ ' + e.message, null, 'err'); }
+  refresh();
 }
+function quickTest(u){ $('turl').value = u; switchTab('tTest'); testFetch(); }
 async function testFetch(){
-  const u = $('turl').value.trim(); if(!u) return;
-  $('tout').textContent = '⏳ ...';
-  try{
-    const h = key()?{'x-api-key':key()}:{};
-    const r = await fetch(base+'/fetch?url='+encodeURIComponent(u),{headers:h});
-    const t = await r.text();
-    $('tout').textContent = `[${r.status}] via ${r.headers.get('x-proxy-used')} (${r.headers.get('x-proxy-latency-ms')}ms): ` + t.slice(0,300);
-  }catch(e){ $('tout').textContent = '⚠ '+e.message; }
+  const u = $('turl').value.trim(); if (!u) return;
+  const sess = $('tsession').value.trim();
+  const b = $('sendBtn'); b.disabled = true; b.innerHTML = '<span class="spin"></span> ' + t('te.sending');
+  try {
+    const h = key() ? { 'x-api-key': key() } : {};
+    const r = await fetch(base + '/fetch?url=' + encodeURIComponent(u) + (sess ? '&session=' + encodeURIComponent(sess) : ''), { headers: h });
+    const txt = await r.text();
+    $('tresult').classList.remove('hidden');
+    const st = $('tStatus');
+    st.textContent = r.status;
+    st.className = 'badge mono ' + (r.status < 400 ? 'badge-ok' : 'badge-bad');
+    $('tVia').textContent = r.headers.get('x-proxy-used') || '?';
+    $('tLat').textContent = (r.headers.get('x-proxy-latency-ms') || '?') + ' ms';
+    $('tBody').textContent = txt.slice(0, 2000);
+    log(`📡 [${r.status}] ${u.slice(0, 60)}`);
+  } catch(e){ toast('⚠ ' + t('msg.testfail'), e.message, 'err'); }
+  b.disabled = false; b.innerHTML = '➤ <span>' + t('te.send') + '</span>';
 }
-$('key').value = localStorage.getItem('rgkey')||'';
-$('key').oninput = e => localStorage.setItem('rgkey', e.target.value);
-refresh(); setInterval(refresh, 15000);
+
+/* ============================== snippets ============================== */
+const fetchSnippet = () => `curl "${base}/fetch?url=https://api.ipify.org"`;
+const stickySnippet = () => `curl "${base}/fetch?url=https://api.ipify.org&session=USER123"`;
+const proxySnippet = () => key()
+  ? `curl -x https://user:${key()}@${location.host} https://api.ipify.org`
+  : `curl -x ${base} http://api.ipify.org`;
+function renderSnippets(){
+  $('snipFetch').textContent = fetchSnippet();
+  $('snipSticky').textContent = stickySnippet();
+  $('snipProxy').textContent = proxySnippet();
+}
+
+/* ============================== boot ============================== */
+$('gwUrl').textContent = location.host;
+$('key').value = localStorage.getItem('rgkey') || '';
+$('key').addEventListener('input', e => { localStorage.setItem('rgkey', e.target.value); setAuthBadge(true); renderSnippets(); });
+$('plist').addEventListener('input', e => {
+  const n = e.target.value.split('\n').filter(l => l.trim()).length;
+  $('lineCount').textContent = n + (LANG === 'fa' ? ' خط' : ' lines');
+});
+const dz = $('dz');
+['dragover','dragenter'].forEach(ev => dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.add('over'); }));
+['dragleave','drop'].forEach(ev => dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.remove('over'); }));
+dz.addEventListener('drop', e => {
+  const f = e.dataTransfer.files[0];
+  if (f) { $('file').files = e.dataTransfer.files; uploadFile(); }
+});
+$('dlg').addEventListener('click', e => { if (e.target.id === 'dlg') closeDialog(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDialog(); });
+setAuthBadge(true);
+setLang(LANG);
+refresh();
+setInterval(() => { if (!document.hidden) refresh(); }, 15000);
 </script>
 </body>
 </html>

@@ -70,10 +70,12 @@ test('GET /health reports the service', async () => {
   assert.equal(JSON.parse(r.body).service, 'railgate');
 });
 
-test('GET / serves the web panel', async () => {
+test('GET / serves the pro web panel (i18n + tabs + dialog)', async () => {
   const r = await req('GET', '/');
   assert.equal(r.status, 200);
   assert.match(r.body, /RailGate/);
+  assert.match(r.body, /data-i18n/);
+  assert.match(r.body, /tailwindcss/);
 });
 
 test('invalid proxy lines are rejected, nothing stored', async () => {
