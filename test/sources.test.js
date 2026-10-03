@@ -97,9 +97,12 @@ test('source listed with ok status', async () => {
   assert.equal(j.sources[0].lastTotal, 2);
 });
 
-test('pool holds the 2 fetched proxies', async () => {
-  const r = await req('GET', '/api/proxies');
-  assert.equal(JSON.parse(r.body).count, 2);
+test('pool holds the 2 fetched proxies (+ paginated summary)', async () => {
+  const r = await req('GET', '/api/proxies?limit=1&offset=0');
+  const j = JSON.parse(r.body);
+  assert.equal(j.count, 2);
+  assert.equal(j.returned, 1);
+  assert.equal(j.summary.total, 2);
 });
 
 test('manual refetch dedupes to zero new', async () => {
@@ -125,6 +128,21 @@ test('delete source with its proxies', async () => {
   assert.equal(r.status, 200);
   assert.equal(j.proxiesRemoved, 2);
   assert.equal(j.total, 0);
+});
+
+test('incremental check covers a batch, not the whole oversized pool', async () => {
+  // simulate a big pool (no network): checks refuse fast via 127.0.0.1 + short timeout
+  const big = [];
+  for (let i = 0; i < 250; i++) big.push(`http://127.0.0.1:${(10000 + i) % 60000}`);
+  let r = await req('POST', '/api/proxies', { proxies: big, replace: true });
+  assert.equal(r.status, 200);
+  const j = JSON.parse(r.body);
+  assert.ok(j.total > 200, `pool grew (total=${j.total})`);
+  assert.ok(j.checked <= 200, `one batch only (checked=${j.checked})`);
+  r = await req('GET', '/api/proxies?limit=5');
+  assert.equal(JSON.parse(r.body).returned, 5);
+  r = await req('DELETE', '/api/proxies?clear=1');
+  assert.equal(JSON.parse(r.body).total, 0);
 });
 
 test('panel exposes the Sources tab (EN + FA)', async () => {

@@ -25,6 +25,9 @@
  *  SUBSCRIPTION_INTERVAL_MS=600000  SUBSCRIPTION_TIMEOUT_MS=20000
  *  SUBSCRIPTION_PRUNE=false (drop this source's proxies missing from latest fetch)
  *  SUBSCRIPTION_MAX_KB=2048  SUBSCRIPTION_ALLOW_PRIVATE=false
+ *  MAX_POOL=3000 (hard cap on pool size — oldest dead/unchecked dropped first)
+ *  CHECK_BATCH_SIZE=200 (incremental health-checks per interval, round-robin)
+ *  SUB_MAX_PROXIES=3000 (max accepted from one subscription fetch)
  */
 
 'use strict';
@@ -63,6 +66,11 @@ const SUBSCRIPTION_TIMEOUT_MS = parseInt(process.env.SUBSCRIPTION_TIMEOUT_MS || 
 const SUBSCRIPTION_MAX_KB = parseInt(process.env.SUBSCRIPTION_MAX_KB || '2048', 10);
 const SUBSCRIPTION_PRUNE = (process.env.SUBSCRIPTION_PRUNE || 'false').toLowerCase() !== 'false';
 const SUBSCRIPTION_ALLOW_PRIVATE = (process.env.SUBSCRIPTION_ALLOW_PRIVATE || 'false').toLowerCase() !== 'false';
+// Scale guards: a 40k+ pool kills health-checks, store writes and list
+// responses on small hosts. Pool is capped, checks run incrementally.
+const MAX_POOL = Math.max(100, parseInt(process.env.MAX_POOL || '3000', 10));
+const CHECK_BATCH_SIZE = Math.max(10, parseInt(process.env.CHECK_BATCH_SIZE || '200', 10));
+const SUB_MAX_PROXIES = Math.max(100, parseInt(process.env.SUB_MAX_PROXIES || '3000', 10));
 
 // ---------------------------------------------------------------- store
 
@@ -77,15 +85,30 @@ let totalErrors = 0;
 let subStats = { runs: 0, lastRun: null };
 const sessions = new Map(); // sessionId -> { proxyUrl, expires }
 
+let saveTimer = null;
+let savePending = false;
 function saveStore() {
+  // Debounced: health-checks + traffic dirty state constantly; on a big pool
+  // a synchronous write per check blocks the event loop. Flush at most ~1/sec.
+  savePending = true;
+  if (saveTimer) return;
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    if (savePending) saveNow();
+  }, 1000);
+  if (saveTimer.unref) saveTimer.unref();
+}
+function saveNow() {
+  savePending = false;
   try {
     const cleanSources = sources.map(s => {
       const { _timer, ...rest } = s;
       return rest;
     });
-    fs.writeFileSync(DATA_FILE, JSON.stringify({ proxies, sources: cleanSources }, null, 2));
+    fs.writeFileSync(DATA_FILE, JSON.stringify({ proxies, sources: cleanSources }));
   } catch (e) { console.error('[store] save failed:', e.message); }
 }
+process.on('beforeExit', () => { if (savePending) { try { saveNow(); } catch { /* */ } } });
 function loadStore() {
   try {
     if (fs.existsSync(DATA_FILE)) {
@@ -133,7 +156,7 @@ function parseProxyList(text) {
 function addProxies(items, replace) {
   if (replace) proxies = [];
   const seen = new Set(proxies.map(p => p.url));
-  let added = 0;
+  let added = 0, droppedForCap = 0;
   for (const it of items) {
     if (seen.has(it.url)) continue;
     seen.add(it.url);
@@ -144,8 +167,19 @@ function addProxies(items, replace) {
     });
     added++;
   }
+  droppedForCap = enforcePoolCap();
   saveStore();
-  return added;
+  return { added, droppedForCap };
+}
+
+/** Hard pool cap: drop oldest dead/never-checked first, keep proven alive ones. */
+function enforcePoolCap() {
+  if (proxies.length <= MAX_POOL) return 0;
+  const rank = p => (p.alive === true ? 2 : (p.alive === null ? 1 : 0));
+  proxies.sort((a, b) => rank(a) - rank(b) || (a.lastUsed || 0) - (b.lastUsed || 0));
+  const drop = proxies.length - MAX_POOL;
+  proxies.splice(0, drop);
+  return drop;
 }
 
 // ---------------------------------------------------------------- subscriptions (auto-fetch proxy lists)
@@ -189,6 +223,13 @@ async function fetchSubscription(source, { manual = false } = {}) {
     }
     const text = Buffer.concat(chunks).toString('utf8');
     const { added, invalid } = parseProxyList(text);
+    // cap intake: giant public lists (40k+) would blow the pool, the
+    // health-checker and every list response on small hosts.
+    let capped = 0;
+    if (added.length > SUB_MAX_PROXIES) {
+      capped = added.length - SUB_MAX_PROXIES;
+      added.length = SUB_MAX_PROXIES;
+    }
     // drop private/LAN entries from public lists unless explicitly allowed
     let items = added;
     let skippedPrivate = 0;
@@ -209,10 +250,11 @@ async function fetchSubscription(source, { manual = false } = {}) {
       }
     }
     const seen = new Set(items.map(i => i.url));
-    let n = 0;
+    let n = 0, skippedForCap = 0;
     const urlSet = new Set(proxies.map(p => p.url));
     for (const it of items) {
       if (urlSet.has(it.url)) continue;
+      if (proxies.length >= MAX_POOL) { skippedForCap++; continue; }
       urlSet.add(it.url);
       proxies.push({
         url: it.url, protocol: it.protocol,
@@ -232,14 +274,14 @@ async function fetchSubscription(source, { manual = false } = {}) {
     source.lastError = null;
     source.lastAdded = n;
     source.lastTotal = items.length;
-    source.lastSkipped = invalid.length + skippedPrivate;
+    source.lastSkipped = invalid.length + skippedPrivate + capped + skippedForCap;
     saveStore();
-    console.log(`[sub] ${source.id}: +${n} new (${items.length} listed, ${invalid.length} invalid, ${skippedPrivate} private) in ${Date.now() - t0}ms`);
+    console.log(`[sub] ${source.id}: +${n} new (${items.length} listed, ${invalid.length} invalid, ${skippedPrivate} private, ${capped} over-fetch-cap, ${skippedForCap} over-pool-cap) in ${Date.now() - t0}ms`);
     const r = await checkAll();
     subStats.runs++;
     subStats.lastRun = Date.now();
     if (manual) { /* immediate response below */ }
-    return { ok: true, added: n, listed: items.length, invalid: invalid.length, skippedPrivate, checked: r.checked, ms: Date.now() - t0 };
+    return { ok: true, added: n, listed: items.length, invalid: invalid.length, skippedPrivate, capped, skippedForCap, checked: r.checked, ms: Date.now() - t0 };
   } catch (e) {
     source.lastFetch = Date.now();
     source.lastStatus = 'error';
@@ -367,6 +409,7 @@ setInterval(() => { // expire sticky sessions
 // ---------------------------------------------------------------- health checker
 
 let checking = false;
+let checkCursor = 0; // round-robin position for incremental checks
 async function checkOne(p) {
   const t0 = Date.now();
   try {
@@ -380,19 +423,31 @@ async function checkOne(p) {
     if (r.status >= 200 && r.status < 400) markSuccess(p, Date.now() - t0);
     else markFail(p);
   } catch { markFail(p); }
-  saveStore();
 }
 
-async function checkAll() {
+// Incremental: at most CHECK_BATCH_SIZE per round, round-robin so every
+// proxy is eventually covered. A 40k pool no longer means 40k concurrent
+// connections + a multi-MB store rewrite in one go.
+async function checkAll({ full = false } = {}) {
   if (checking || proxies.length === 0) return { checked: 0 };
   checking = true;
   try {
-    const BATCH = 10;
-    for (let i = 0; i < proxies.length; i += BATCH) {
-      await Promise.allSettled(proxies.slice(i, i + BATCH).map(checkOne));
+    let batch;
+    if (full || proxies.length <= CHECK_BATCH_SIZE) {
+      batch = proxies;
+    } else {
+      batch = [];
+      for (let i = 0; i < CHECK_BATCH_SIZE; i++) {
+        batch.push(proxies[(checkCursor + i) % proxies.length]);
+      }
+      checkCursor = (checkCursor + CHECK_BATCH_SIZE) % proxies.length;
     }
-    saveStore();
-    return { checked: proxies.length };
+    const CONC = 10;
+    for (let i = 0; i < batch.length; i += CONC) {
+      await Promise.allSettled(batch.slice(i, i + CONC).map(checkOne));
+    }
+    saveStore(); // debounced — flushes ~1/sec, not per check
+    return { checked: batch.length, pool: proxies.length };
   } finally { checking = false; }
 }
 
@@ -580,13 +635,35 @@ app.get('/health', (req, res) => {
 });
 
 // --- management API
+function summarizePool() {
+  let alive = 0, dead = 0, unchecked = 0;
+  const byProto = {};
+  for (const p of proxies) {
+    if (p.alive === true) alive++;
+    else if (p.alive === false) dead++;
+    else unchecked++;
+    byProto[p.protocol] = (byProto[p.protocol] || 0) + 1;
+  }
+  return { total: proxies.length, alive, dead, unchecked, byProto, maxPool: MAX_POOL };
+}
 app.get('/api/proxies', gatewayAuth, (req, res) => {
+  const limit = Math.max(1, Math.min(parseInt(req.query.limit, 10) || 200, 1000));
+  const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+  const filter = (req.query.filter || 'all').toLowerCase();
+  const q = (req.query.q || '').toLowerCase();
+  let list = proxies;
+  if (filter === 'alive') list = list.filter(p => p.alive === true);
+  else if (filter === 'dead') list = list.filter(p => p.alive === false);
+  else if (filter === 'unchecked') list = list.filter(p => p.alive == null);
+  if (q) list = list.filter(p => p.url.toLowerCase().includes(q) || (p.protocol || '').includes(q));
+  const page = list.slice(offset, offset + limit);
   res.json({
-    ok: true, count: proxies.length,
-    proxies: proxies.map(p => ({
+    ok: true, count: proxies.length, offset, limit, returned: page.length,
+    summary: summarizePool(),
+    proxies: page.map(p => ({
       url: redact(p.url), protocol: p.protocol, alive: p.alive,
       latencyMs: p.latencyMs, success: p.success, fail: p.fail,
-      lastCheck: p.lastCheck, lastUsed: p.lastUsed,
+      lastCheck: p.lastCheck, lastUsed: p.lastUsed, source: p.source || null,
       backoffSec: p.backoffUntil > Date.now() ? Math.ceil((p.backoffUntil - Date.now()) / 1000) : 0,
     })),
   });
@@ -597,18 +674,18 @@ app.post('/api/proxies', gatewayAuth, async (req, res) => {
   const raw = Array.isArray(list) ? list.join('\n') : (text || '');
   if (!raw.trim()) return res.status(400).json({ ok: false, error: 'empty-list (send {proxies:[...]} or {text:"..."} )' });
   const { added, invalid } = parseProxyList(raw);
-  const n = addProxies(added, !!replace);
+  const { added: n, droppedForCap } = addProxies(added, !!replace);
   const r = await checkAll();
-  res.json({ ok: true, added: n, invalid, total: proxies.length, checked: r.checked });
+  res.json({ ok: true, added: n, invalid, droppedForCap, total: proxies.length, checked: r.checked, summary: summarizePool() });
 });
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 1024 * 1024 } });
 app.post('/api/proxies/upload', gatewayAuth, upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ ok: false, error: 'no file (field name "file", .txt)' });
   const { added, invalid } = parseProxyList(req.file.buffer.toString('utf8'));
-  const n = addProxies(added, req.query.replace === '1');
+  const { added: n, droppedForCap } = addProxies(added, req.query.replace === '1');
   const r = await checkAll();
-  res.json({ ok: true, added: n, invalid, total: proxies.length, checked: r.checked });
+  res.json({ ok: true, added: n, invalid, droppedForCap, total: proxies.length, checked: r.checked, summary: summarizePool() });
 });
 
 app.delete('/api/proxies', gatewayAuth, (req, res) => {
@@ -627,7 +704,8 @@ app.delete('/api/proxies', gatewayAuth, (req, res) => {
 });
 
 app.post('/api/proxies/check', gatewayAuth, async (req, res) => {
-  const r = await checkAll();
+  const full = (req.query.full === '1') || req.query.full === 'true';
+  const r = await checkAll({ full });
   res.json({ ok: true, ...r, alive: proxies.filter(p => p.alive === true).length });
 });
 
@@ -853,6 +931,13 @@ async function openViaSocks(proxyUrl, destHost, destPort) {
 // ---------------------------------------------------------------- boot
 
 loadStore();
+// trim any oversized pool carried over from before the cap existed
+// (keeps proven-alive first), then seed subscription URLs and schedule.
+const bootDropped = enforcePoolCap();
+if (bootDropped) {
+  console.log(`[store] trimmed ${bootDropped} excess proxies to MAX_POOL=${MAX_POOL}`);
+  saveNow();
+}
 // seed subscription URLs from env (Railway Variables), then schedule everything
 for (const u of parseUrlList(SUBSCRIPTION_URLS)) {
   try { addSource(u, {}); } catch (e) { console.error('[sub] bad seed URL:', u, e.message); }

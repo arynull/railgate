@@ -63,7 +63,10 @@ curl -X DELETE "$APP/api/sources/<id>?deleteProxies=1"
 ```
 
 Per-source options: `intervalMin` (min 1), `prune:true` (drop this source's
-proxies when they vanish from its list). Or seed sources via the
+proxies when they vanish from its list). Intake is capped (`SUB_MAX_PROXIES`,
+default 3000) and the pool itself is capped (`MAX_POOL`, default 3000) — giant
+public lists can't OOM the host or stall health-checks; checks run in
+round-robin batches (`CHECK_BATCH_SIZE`, default 200). Or seed sources via the
 `SUBSCRIPTION_URLS` env var (comma/newline-separated — handy as a Railway
 Variable). The web panel has a dedicated **Sources** tab for all of this.
 
@@ -145,6 +148,9 @@ Auth = `x-api-key` header or `?key=` query when `GATEWAY_KEY` is set.
 | `SUBSCRIPTION_MAX_KB` | `2048` | Max list size accepted per fetch |
 | `SUBSCRIPTION_PRUNE` | `false` | Default: drop a source's proxies when they vanish from its list |
 | `SUBSCRIPTION_ALLOW_PRIVATE` | `false` | Accept private/LAN entries found in subscription lists |
+| `MAX_POOL` | `3000` | Hard cap on pool size — oldest dead/unchecked dropped first (also trims on boot) |
+| `CHECK_BATCH_SIZE` | `200` | Proxies health-checked per interval, round-robin |
+| `SUB_MAX_PROXIES` | `3000` | Max proxies accepted from a single subscription fetch |
 
 ## Local development
 

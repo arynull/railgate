@@ -245,7 +245,7 @@
       <div><div class="card-title" data-i18n="px.title">Upstream proxies</div>
       <div class="card-desc" data-i18n="px.sub">Live status, latency and usage per upstream. Passwords are never shown.</div></div>
       <div class="ms-auto flex flex-wrap items-center gap-2">
-        <input id="search" class="input ltr" style="width:190px;direction:ltr;" placeholder="Search…" oninput="renderTable()">
+        <input id="search" class="input ltr" style="width:190px;direction:ltr;" placeholder="Search…" oninput="refresh(true)">
         <div class="seg" id="filterSeg">
           <button data-f="all" class="active" onclick="setFilter('all')" data-i18n="px.all">All</button>
           <button data-f="alive" onclick="setFilter('alive')" data-i18n="px.alive">Alive</button>
@@ -266,6 +266,7 @@
         </tbody>
       </table>
       </div>
+      <div class="flex items-center gap-2 mt-3 text-xs" id="pager" style="color:hsl(var(--muted));"></div>
     </div>
   </section>
 
@@ -474,7 +475,7 @@ function setLang(l){
   for (const id of ['langEn','langEnM']) document.getElementById(id)?.classList.toggle('active', l === 'en');
   for (const id of ['langFa','langFaM']) document.getElementById(id)?.classList.toggle('active', l === 'fa');
   document.getElementById('search').placeholder = l === 'fa' ? 'جستجو…' : 'Search…';
-  renderSnippets(); renderTable(true);
+  renderSnippets(); refresh(true);
 }
 
 /* ============================== helpers ============================== */
@@ -602,11 +603,20 @@ async function delSource(id, withProxies){
 /* ============================== data ============================== */
 let cache = [];
 let FILTER = 'all';
+let PAGE = 0;
+const PAGE_SIZE = 50;
+let poolSummary = null;
 
-async function refresh(){
+async function refresh(resetPage){
+  if (resetPage) PAGE = 0;
   try {
+    const qs = new URLSearchParams({
+      limit: String(PAGE_SIZE), offset: String(PAGE * PAGE_SIZE),
+      filter: FILTER === 'all' ? 'all' : FILTER,
+      q: $('search').value.trim(),
+    });
     const [p, s] = await Promise.all([
-      fetch(base + '/api/proxies', { headers: authHeaders() }).then(r => r.json()),
+      fetch(base + '/api/proxies?' + qs, { headers: authHeaders() }).then(r => r.json()),
       fetch(base + '/api/stats', { headers: authHeaders() }).then(r => r.json()),
     ]);
     if (!p.ok) {
@@ -616,15 +626,19 @@ async function refresh(){
     }
     setAuthBadge(true);
     cache = p.proxies || [];
-    $('sTotal').textContent = p.count ?? cache.length;
-    const alive = (s.alive ?? cache.filter(x => x.alive === true).length);
+    poolSummary = p.summary || null;
+    const total = p.count ?? 0;
+    $('sTotal').textContent = total.toLocaleString(LANG === 'fa' ? 'fa-IR' : 'en-US');
+    const alive = (s.alive ?? poolSummary?.alive ?? cache.filter(x => x.alive === true).length);
     $('sAlive').textContent = alive;
     $('sReq').textContent = (s.requests ?? 0).toLocaleString(LANG === 'fa' ? 'fa-IR' : 'en-US');
     $('sErr').textContent = (s.errors ?? 0).toLocaleString(LANG === 'fa' ? 'fa-IR' : 'en-US');
-    const pct = cache.length ? Math.round(alive / cache.length * 100) : 0;
+    const pct = total ? Math.round(alive / total * 100) : 0;
     $('healthBar').style.width = pct + '%';
-    $('healthTxt').textContent = `${alive}/${cache.length} · ${pct}%`;
-    renderTable();
+    $('healthTxt').textContent = `${alive}/${total} · ${pct}%`;
+    const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    if (PAGE > pages - 1) { PAGE = pages - 1; return refresh(); }
+    renderTable(p.count, pages);
   } catch(e){ $('sideDot').className = 'dot dot-bad'; log('⚠ ' + t('msg.offline')); }
 }
 function setAuthBadge(known){
@@ -638,15 +652,9 @@ function statusBadge(x){
   if (x.alive === false) return `<span class="badge badge-bad"><span class="dot dot-bad"></span>${t('row.dead')}${x.backoffSec ? ` · ${x.backoffSec}s` : ''}</span>`;
   return `<span class="badge badge-mut"><span class="dot dot-mut"></span>${t('row.unknown')}</span>`;
 }
-function renderTable(keep){
-  const q = ($('search').value || '').toLowerCase();
+function renderTable(total, pages){
   const maxLat = Math.max(1, ...cache.map(x => x.latencyMs || 0));
-  const rows = cache.filter(x => {
-    if (FILTER === 'alive' && x.alive !== true) return false;
-    if (FILTER === 'dead' && x.alive !== false) return false;
-    if (q && !x.url.toLowerCase().includes(q) && !x.protocol.includes(q)) return false;
-    return true;
-  });
+  const rows = cache;
   $('rows').innerHTML = rows.map(x => {
     const lat = x.latencyMs == null ? '–' : x.latencyMs + ' ms';
     const bar = x.latencyMs == null ? '' :
@@ -662,8 +670,15 @@ function renderTable(keep){
     </tr>`;
   }).join('') || `<tr><td colspan="7" class="text-center py-8" style="color:hsl(var(--muted));">${t('row.empty')}</td></tr>`;
   document.querySelectorAll('#filterSeg button').forEach(b => b.classList.toggle('active', b.dataset.f === FILTER));
+  const pg = $('pager');
+  if (total != null && pages > 1) {
+    pg.innerHTML = `<button class="btn btn-ghost btn-sm" ${PAGE === 0 ? 'disabled' : ''} onclick="goPage(-1)">←</button>
+      <span class="mono">${PAGE + 1} / ${pages} · ${(total || 0).toLocaleString()}</span>
+      <button class="btn btn-ghost btn-sm" ${PAGE >= pages - 1 ? 'disabled' : ''} onclick="goPage(1)">→</button>`;
+  } else pg.innerHTML = total ? `<span class="mono">${(total || 0).toLocaleString()} proxies</span>` : '';
 }
-function setFilter(f){ FILTER = f; renderTable(); }
+function goPage(d){ PAGE = Math.max(0, PAGE + d); refresh(); }
+function setFilter(f){ FILTER = f; PAGE = 0; refresh(); }
 
 /* ============================== actions ============================== */
 async function addProxies(replace){
