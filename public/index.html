@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RailGate — گیت‌وی چرخشی پروکسی</title>
+<style>
+  :root { --bg:#0f172a; --card:#1e293b; --line:#334155; --txt:#e2e8f0; --mut:#94a3b8; --acc:#38bdf8; --ok:#22c55e; --bad:#ef4444; --warn:#f59e0b; }
+  * { box-sizing:border-box; font-family:Tahoma,sans-serif; }
+  body { background:var(--bg); color:var(--txt); margin:0; padding:20px; max-width:900px; margin-inline:auto; }
+  h1 { font-size:1.4rem; } h1 span { color:var(--acc); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:16px; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  input[type=text], input[type=password], textarea { background:#0b1220; color:var(--txt); border:1px solid var(--line); border-radius:8px; padding:10px; width:100%; }
+  textarea { min-height:120px; direction:ltr; text-align:left; font-family:monospace; }
+  button { background:var(--acc); color:#04121d; border:none; border-radius:8px; padding:10px 18px; font-weight:bold; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--acc); border:1px solid var(--acc); }
+  button.danger { background:transparent; color:var(--bad); border:1px solid var(--bad); }
+  button:disabled { opacity:.5; }
+  .stat { display:flex; gap:16px; flex-wrap:wrap; }
+  .stat div { background:#0b1220; border:1px solid var(--line); border-radius:8px; padding:10px 16px; }
+  .stat b { color:var(--acc); font-size:1.2rem; }
+  table { width:100%; border-collapse:collapse; font-size:.8rem; direction:ltr; }
+  th,td { border-bottom:1px solid var(--line); padding:8px; text-align:left; }
+  .dot { display:inline-block; width:10px; height:10px; border-radius:50%; }
+  .ok{background:var(--ok)} .bad{background:var(--bad)} .na{background:var(--mut)}
+  code { background:#0b1220; padding:2px 6px; border-radius:6px; direction:ltr; display:inline-block; font-size:.8rem; }
+  .mut { color:var(--mut); font-size:.85rem; }
+  #log { max-height:180px; overflow:auto; direction:ltr; text-align:left; font-family:monospace; font-size:.78rem; background:#0b1220; border-radius:8px; padding:10px; }
+</style>
+</head>
+<body>
+<h1>🚂 Rail<span>Gate</span> — گیت‌وی چرخشی پروکسی</h1>
+
+<div class="card">
+  <div class="row">
+    <input type="password" id="key" placeholder="GATEWAY_KEY (اگر ست شده)" style="max-width:300px">
+    <button class="ghost" onclick="refresh()">🔄 بروزرسانی</button>
+  </div>
+  <p class="mut" id="base"></p>
+  <div class="stat">
+    <div>کل پروکسی <br><b id="sTotal">–</b></div>
+    <div>سالم <br><b id="sAlive">–</b></div>
+    <div>درخواست‌ها <br><b id="sReq">–</b></div>
+    <div>خطاها <br><b id="sErr">–</b></div>
+  </div>
+</div>
+
+<div class="card">
+  <h3>➕ افزودن پروکسی</h3>
+  <p class="mut">هر خط یک پروکسی: <code>http://user:pass@host:port</code> ، <code>https://...</code> ، <code>socks5://...</code> ، <code>socks4://...</code> — یا فقط <code>host:port</code></p>
+  <textarea id="plist" placeholder="socks5://user:pass@1.2.3.4:1080&#10;http://5.6.7.8:8080"></textarea>
+  <div class="row" style="margin-top:10px">
+    <button onclick="addProxies(false)">افزودن</button>
+    <button class="ghost" onclick="addProxies(true)">جایگزین کل لیست</button>
+    <input type="file" id="file" accept=".txt,.csv" style="max-width:220px">
+    <button class="ghost" onclick="uploadFile()">آپلود فایل</button>
+    <button class="ghost" onclick="checkNow()">✅ تست سلامت الان</button>
+  </div>
+</div>
+
+<div class="card">
+  <h3>📡 تست از طریق گیت‌وی</h3>
+  <div class="row">
+    <input type="text" id="turl" value="https://api.ipify.org" style="flex:1;min-width:200px;direction:ltr">
+    <button onclick="testFetch()">ارسال</button>
+  </div>
+  <p class="mut" id="tout"></p>
+</div>
+
+<div class="card">
+  <h3>📋 پروکسی‌ها <button class="danger" onclick="clearAll()" style="padding:4px 10px">حذف همه</button></h3>
+  <div style="overflow:auto"><table>
+    <thead><tr><th></th><th>proxy</th><th>proto</th><th>latency</th><th>ok/fail</th><th>last used</th><th></th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table></div>
+</div>
+
+<div class="card">
+  <h3>💻 نحوه استفاده</h3>
+  <p class="mut">۱) Fetch API (ساده):</p>
+  <code id="ex1"></code>
+  <p class="mut">۲) HTTP Forward Proxy (با curl):</p>
+  <code id="ex2"></code>
+  <p class="mut">۳) سشن چسبان (یک IP ثابت برای چند درخواست): <code>?session=USER123</code> به انتهای هر دو مدل اضافه کن.</p>
+  <div id="log"></div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const base = location.origin;
+$('base').textContent = 'آدرس گیت‌وی: ' + base;
+$('ex1').textContent = `curl "${base}/fetch?url=https://api.ipify.org"`;
+$('ex2').textContent = `curl -x ${base.replace('http','http')} http://api.ipify.org`;
+const key = () => $('key').value.trim();
+const headers = () => ({ 'Content-Type':'application/json', ...(key()?{'x-api-key':key()}:{}) });
+function log(m){ const l=$('log'); l.innerHTML = new Date().toLocaleTimeString('fa')+' '+m+'<br>'+l.innerHTML; }
+
+async function refresh(){
+  try{
+    const [p,s] = await Promise.all([
+      fetch(base+'/api/proxies',{headers:headers()}).then(r=>r.json()),
+      fetch(base+'/api/stats',{headers:headers()}).then(r=>r.json()),
+    ]);
+    if(!p.ok){ log('⚠ '+JSON.stringify(p)); return; }
+    $('sTotal').textContent = p.count;
+    $('sAlive').textContent = s.alive ?? p.proxies.filter(x=>x.alive===true).length;
+    $('sReq').textContent = s.requests ?? 0;
+    $('sErr').textContent = s.errors ?? 0;
+    $('rows').innerHTML = p.proxies.map(x=>`<tr>
+      <td><span class="dot ${x.alive===true?'ok':x.alive===false?'bad':'na'}"></span></td>
+      <td style="font-family:monospace">${x.url}</td><td>${x.protocol}</td>
+      <td>${x.latencyMs==null?'–':x.latencyMs+'ms'}</td>
+      <td>${x.success}/${x.fail}${x.backoffSec?` ⏳${x.backoffSec}s`:''}</td>
+      <td>${x.lastUsed?new Date(x.lastUsed).toLocaleTimeString('fa'):'–'}</td>
+      <td><button class="danger" style="padding:2px 8px" onclick="delOne('${encodeURIComponent(x.url)}')">✕</button></td>
+    </tr>`).join('') || '<tr><td colspan=7 style="text-align:center">خالی — پروکسی اضافه کن</td></tr>';
+  }catch(e){ log('⚠ '+e.message); }
+}
+async function addProxies(replace){
+  const text = $('plist').value.trim();
+  if(!text) return alert('لیست خالیه');
+  const r = await fetch(base+'/api/proxies',{method:'POST',headers:headers(),body:JSON.stringify({text,replace})}).then(r=>r.json());
+  log('➕ '+JSON.stringify(r)); $('plist').value=''; refresh();
+}
+async function uploadFile(){
+  const f = $('file').files[0]; if(!f) return alert('فایل انتخاب کن');
+  const fd = new FormData(); fd.append('file', f);
+  const h = key()?{'x-api-key':key()}:{};
+  const r = await fetch(base+'/api/proxies/upload',{method:'POST',headers:h,body:fd}).then(r=>r.json());
+  log('📁 '+JSON.stringify(r)); refresh();
+}
+async function checkNow(){
+  const r = await fetch(base+'/api/proxies/check',{method:'POST',headers:headers()}).then(r=>r.json());
+  log('✅ '+JSON.stringify(r)); refresh();
+}
+async function delOne(u){
+  const r = await fetch(base+'/api/proxies?url='+u,{method:'DELETE',headers:headers()}).then(r=>r.json());
+  log('🗑 '+JSON.stringify(r)); refresh();
+}
+async function clearAll(){
+  if(!confirm('همه پروکسی‌ها حذف بشن؟')) return;
+  const r = await fetch(base+'/api/proxies?clear=1',{method:'DELETE',headers:headers()}).then(r=>r.json());
+  log('🗑 '+JSON.stringify(r)); refresh();
+}
+async function testFetch(){
+  const u = $('turl').value.trim(); if(!u) return;
+  $('tout').textContent = '⏳ ...';
+  try{
+    const h = key()?{'x-api-key':key()}:{};
+    const r = await fetch(base+'/fetch?url='+encodeURIComponent(u),{headers:h});
+    const t = await r.text();
+    $('tout').textContent = `[${r.status}] via ${r.headers.get('x-proxy-used')} (${r.headers.get('x-proxy-latency-ms')}ms): ` + t.slice(0,300);
+  }catch(e){ $('tout').textContent = '⚠ '+e.message; }
+}
+$('key').value = localStorage.getItem('rgkey')||'';
+$('key').oninput = e => localStorage.setItem('rgkey', e.target.value);
+refresh(); setInterval(refresh, 15000);
+</script>
+</body>
+</html>
