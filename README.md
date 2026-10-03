@@ -1,6 +1,6 @@
 # 🚂 RailGate — Rotating Proxy Gateway
 
-[![CI](https://github.com/rayanalpha/railgate/actions/workflows/ci.yml/badge.svg)](https://github.com/rayanalpha/railgate/actions/workflows/ci.yml)
+[![CI](https://github.com/arynull/railgate/actions/workflows/ci.yml/badge.svg)](https://github.com/arynull/railgate/actions/workflows/ci.yml)
 
 Give RailGate a list of upstream proxies (`http` / `https` / `socks4` / `socks5`,
 as links or a `.txt` file) and it serves them through **one Railway URL** with
