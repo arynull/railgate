@@ -136,7 +136,15 @@ function normalizeLine(line) {
   let proto = u.protocol.toLowerCase(); // http: https: socks: socks4: socks5:
   if (!['http:', 'https:', 'socks:', 'socks4:', 'socks5:'].includes(proto)) return { error: s };
   if (proto === 'socks:') proto = 'socks5:';
-  if (!u.hostname || !u.port) return { error: s };
+  if (!u.hostname) return { error: s };
+  if (!u.port) {
+    // WHATWG URL strips explicit default ports (http:80, https:443) so .port
+    // reads '' — restore from the raw string. Truly port-less entries
+    // (bare hostnames) stay invalid.
+    const mPort = /:\/\/[^/]*:(\d+)(?=[/?#]|$)/.exec(s);
+    if (!mPort) return { error: s };
+    try { u.port = mPort[1]; } catch { return { error: s }; }
+  }
   u.protocol = proto;
   return { url: u.toString(), protocol: proto.replace(':', '') };
 }
@@ -964,7 +972,8 @@ function openDirect(host, port) {
 function openViaHttpProxy(proxyUrl, destHost, destPort) {
   return new Promise((resolve, reject) => {
     const pu = new URL(proxyUrl);
-    const s = net.connect(parseInt(pu.port, 10) || 8080, pu.hostname, () => {
+    const defPort = pu.protocol === 'https:' ? 443 : 8080;
+    const s = net.connect(parseInt(pu.port, 10) || defPort, pu.hostname, () => {
       let hdr = `CONNECT ${destHost}:${destPort} HTTP/1.1\r\nHost: ${destHost}:${destPort}\r\n`;
       if (pu.username) hdr += `Proxy-Authorization: Basic ${Buffer.from(`${decodeURIComponent(pu.username)}:${decodeURIComponent(pu.password)}`).toString('base64')}\r\n`;
       hdr += '\r\n';

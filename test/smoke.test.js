@@ -91,6 +91,18 @@ test('empty proxy add is a 400', async () => {
   assert.equal(r.status, 400);
 });
 
+test('explicit default ports survive WHATWG normalization (https:443, http:80)', async () => {
+  const r = await req('POST', '/api/proxies', {
+    proxies: ['https://127.0.0.1:443', 'http://127.0.0.1:80', 'not a proxy!!!'],
+    replace: true,
+  });
+  assert.equal(r.status, 200);
+  const j = JSON.parse(r.body);
+  assert.equal(j.added, 2);
+  assert.equal(j.invalid.length, 1);
+  await req('DELETE', '/api/proxies?clear=1');
+});
+
 test('SSRF guard blocks localhost targets', async () => {
   const r = await req('GET', '/fetch?url=' + encodeURIComponent('http://127.0.0.1:9/x'));
   assert.equal(r.status, 403);
