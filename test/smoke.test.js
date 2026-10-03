@@ -104,6 +104,7 @@ test('dead upstream is marked down; fetch fails 502 without crashing', async () 
   const list = JSON.parse(r.body);
   assert.equal(list.count, 1);
   assert.equal(list.proxies[0].alive, false);
+  assert.ok(list.proxies[0].lastError, 'failure reason recorded');
 
   r = await req('GET', '/fetch?url=' + encodeURIComponent('http://192.0.2.1/'));
   assert.equal(r.status, 502);

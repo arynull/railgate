@@ -350,11 +350,23 @@ function markSuccess(p, latencyMs) {
   p.alive = true; p.latencyMs = latencyMs; p.success++;
   p.consecFails = 0; p.backoffUntil = 0; p.lastCheck = Date.now(); p.lastUsed = Date.now();
 }
-function markFail(p) {
+function markFail(p, reason) {
   p.fail++; p.consecFails = (p.consecFails || 0) + 1;
   p.alive = false; p.lastCheck = Date.now();
+  if (reason) p.lastError = String(reason).slice(0, 160);
   p.backoffUntil = Date.now() + backoffFor(p);
 }
+
+/** Effective dial URL: https entries that turned out to be plain-HTTP
+ *  (extremely common in free "https" lists) are auto-downgraded. */
+function effectiveUrl(p) {
+  if (p.transport && p.transport !== p.protocol) {
+    try { const u = new URL(p.url); u.protocol = p.transport + ':'; return u.toString(); }
+    catch { return p.url; }
+  }
+  return p.url;
+}
+function effectiveProto(p) { return p.transport || p.protocol; }
 
 function alivePool() {
   const now = Date.now();
@@ -412,17 +424,46 @@ let checking = false;
 let checkCursor = 0; // round-robin position for incremental checks
 async function checkOne(p) {
   const t0 = Date.now();
-  try {
-    const agent = new ProxyAgent(p.url);
+  const tryFetch = async (url) => {
+    const agent = new ProxyAgent(url);
     const r = await fetch(CHECK_URL, {
       dispatcher: agent,
       signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
       redirect: 'manual',
     });
     await r.arrayBuffer().catch(() => {});
-    if (r.status >= 200 && r.status < 400) markSuccess(p, Date.now() - t0);
-    else markFail(p);
-  } catch { markFail(p); }
+    return r.status;
+  };
+  const tlsish = m => /ssl|tls|cert|eproto|wrong version|handshake|alert|record layer/i.test(String(m || ''));
+  try {
+    const status = await tryFetch(effectiveUrl(p));
+    if (status >= 200 && status < 400) { markSuccess(p, Date.now() - t0); return; }
+    // plain-HTTP entry that is actually a TLS-only proxy answers 400 to plain HTTP
+    if (p.protocol === 'http' && !p.transport && status === 400) {
+      try {
+        p.transport = 'https';
+        const s2 = await tryFetch(effectiveUrl(p));
+        if (s2 >= 200 && s2 < 400) { markSuccess(p, Date.now() - t0); return; }
+        markFail(p, 'http-' + s2);
+        return;
+      } catch (e2) { p.transport = null; markFail(p, String((e2 && e2.message) || e2)); return; }
+    }
+    markFail(p, 'http-' + status);
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    // "https" entry that is actually plain HTTP: the TLS handshake blows up —
+    // downgrade once and retry instead of marking dead.
+    if (p.protocol === 'https' && (p.transport || p.protocol) === 'https' && tlsish(msg)) {
+      try {
+        p.transport = 'http';
+        const s2 = await tryFetch(effectiveUrl(p));
+        if (s2 >= 200 && s2 < 400) { markSuccess(p, Date.now() - t0); return; }
+        markFail(p, 'http-' + s2);
+        return;
+      } catch (e2) { markFail(p, String((e2 && e2.message) || e2)); return; }
+    }
+    markFail(p, msg);
+  }
 }
 
 // Incremental: at most CHECK_BATCH_SIZE per round, round-robin so every
@@ -526,12 +567,28 @@ async function fetchViaRotator(target, { method = 'GET', headers = {}, body = nu
 
   async function doFetch(p, label) {
     const t0 = Date.now();
-    const dispatcher = p ? new ProxyAgent(p.url) : undefined;
-    const r = await fetch(target, {
-      method, headers: cleanHeaders,
-      body: (method === 'GET' || method === 'HEAD' || body == null) ? undefined : body,
-      dispatcher, signal: AbortSignal.timeout(timeoutMs), redirect: 'follow',
-    });
+    const targetTimeout = timeoutMs;
+    const tryUrl = async (proxyUrl) => {
+      const dispatcher = p ? new ProxyAgent(proxyUrl) : undefined;
+      const r = await fetch(target, {
+        method, headers: cleanHeaders,
+        body: (method === 'GET' || method === 'HEAD' || body == null) ? undefined : body,
+        dispatcher, signal: AbortSignal.timeout(targetTimeout), redirect: 'follow',
+      });
+      return r;
+    };
+    let r;
+    try {
+      r = await tryUrl(p ? effectiveUrl(p) : undefined);
+    } catch (e) {
+      // same one-shot http<->https retry as the health-checker
+      const m = String((e && e.message) || e);
+      if (p && p.protocol === 'https' && (p.transport || p.protocol) === 'https' &&
+          /ssl|tls|cert|eproto|wrong version|handshake|alert|record layer/i.test(m)) {
+        p.transport = 'http';
+        r = await tryUrl(effectiveUrl(p));
+      } else throw e;
+    }
     const buf = Buffer.from(await r.arrayBuffer());
     const outHeaders = {};
     r.headers.forEach((v, k) => { if (!HOP_HEADERS.has(k.toLowerCase())) outHeaders[k] = v; });
@@ -657,11 +714,19 @@ app.get('/api/proxies', gatewayAuth, (req, res) => {
   else if (filter === 'unchecked') list = list.filter(p => p.alive == null);
   if (q) list = list.filter(p => p.url.toLowerCase().includes(q) || (p.protocol || '').includes(q));
   const page = list.slice(offset, offset + limit);
+  const lastErrors = {};
+  for (const p of proxies) {
+    if (p.lastError) lastErrors[p.lastError] = (lastErrors[p.lastError] || 0) + 1;
+  }
+  const topErrors = Object.entries(lastErrors)
+    .sort((a, b) => b[1] - a[1]).slice(0, 8)
+    .map(([error, count]) => ({ error, count }));
   res.json({
     ok: true, count: proxies.length, offset, limit, returned: page.length,
-    summary: summarizePool(),
+    summary: summarizePool(), topErrors,
     proxies: page.map(p => ({
-      url: redact(p.url), protocol: p.protocol, alive: p.alive,
+      url: redact(p.url), protocol: p.protocol, transport: p.transport || null,
+      alive: p.alive, lastError: p.lastError || null,
       latencyMs: p.latencyMs, success: p.success, fail: p.fail,
       lastCheck: p.lastCheck, lastUsed: p.lastUsed, source: p.source || null,
       backoffSec: p.backoffUntil > Date.now() ? Math.ceil((p.backoffUntil - Date.now()) / 1000) : 0,
@@ -861,8 +926,17 @@ server.on('connect', async (req, clientSocket, head) => {
     if (!p) {
       if (!ALLOW_DIRECT) throw new Error('no-proxies-configured');
       upstream = await openDirect(destHost, destPort);
-    } else if (p.protocol === 'http' || p.protocol === 'https') {
-      upstream = await openViaHttpProxy(p.url, destHost, destPort);
+    } else if (effectiveProto(p) === 'http' || effectiveProto(p) === 'https') {
+      try {
+        upstream = await openViaHttpProxy(effectiveUrl(p), destHost, destPort);
+      } catch (e) {
+        // same TLS-mismatch retry: https entry that is actually plain HTTP
+        if (p.protocol === 'https' && (p.transport || p.protocol) === 'https' &&
+            /ssl|tls|cert|eproto|wrong version|handshake|alert|econnreset/i.test(String((e && e.message) || e))) {
+          p.transport = 'http';
+          upstream = await openViaHttpProxy(effectiveUrl(p), destHost, destPort);
+        } else throw e;
+      }
     } else {
       upstream = await openViaSocks(p.url, destHost, destPort);
     }

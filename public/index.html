@@ -255,6 +255,7 @@
       </div>
     </div>
     <div class="card-bd" id="add">
+      <div id="errBox" class="hidden card p-3 mb-3" style="background:hsl(var(--destructive) / .06);border-color:hsl(var(--destructive) / .3);"></div>
       <div style="overflow-x:auto;">
       <table class="data ltr" style="direction:ltr;">
         <thead><tr>
@@ -416,7 +417,7 @@ en:{ 'nav.overview':'Overview','nav.proxies':'Proxies','nav.add':'Add proxies','
 'pool.health':'Pool health','pool.check':'Check now','pool.checking':'Checking…',
 'tab.proxies':'Proxies','tab.add':'Add','tab.subs':'Sources','tab.test':'Test','tab.docs':'Integrate',
 'px.title':'Upstream proxies','px.sub':'Live status, latency and usage per upstream. Passwords are never shown.',
-'px.all':'All','px.alive':'Alive','px.dead':'Dead','px.clear':'Clear all',
+'px.all':'All','px.alive':'Alive','px.dead':'Dead','px.clear':'Clear all','px.toperr':'Top failure reasons',
 'th.status':'Status','th.proxy':'Proxy','th.latency':'Latency','th.used':'Last used',
 'ad.title':'Add proxies','ad.add':'Add to pool','ad.replace':'Replace pool','ad.or':'or upload a file',
 'ad.drop':'Drop a .txt file here or click to browse','ad.drop2':'One proxy per line · max 1 MB',
@@ -443,7 +444,7 @@ fa:{ 'nav.overview':'نمای کلی','nav.proxies':'پروکسی‌ها','nav.a
 'pool.health':'سلامت استخر','pool.check':'تست سلامت','pool.checking':'در حال تست…',
 'tab.proxies':'پروکسی‌ها','tab.add':'افزودن','tab.subs':'منبع‌ها','tab.test':'تست','tab.docs':'اتصال',
 'px.title':'پروکسی‌های ورودی','px.sub':'وضعیت زنده، تأخیر و مصرف هر پروکسی. رمزها هرگز نمایش داده نمی‌شوند.',
-'px.all':'همه','px.alive':'سالم','px.dead':'خراب','px.clear':'حذف همه',
+'px.all':'همه','px.alive':'سالم','px.dead':'خراب','px.clear':'حذف همه','px.toperr':'شایع‌ترین علت‌های خطا',
 'th.status':'وضعیت','th.proxy':'پروکسی','th.latency':'تأخیر','th.used':'آخرین استفاده',
 'ad.title':'افزودن پروکسی','ad.add':'افزودن به استخر','ad.replace':'جایگزینی استخر','ad.or':'یا آپلود فایل',
 'ad.drop':'فایل .txt را اینجا رها کن یا کلیک کن','ad.drop2':'هر خط یک پروکسی · حداکثر ۱ مگابایت',
@@ -606,6 +607,7 @@ let FILTER = 'all';
 let PAGE = 0;
 const PAGE_SIZE = 50;
 let poolSummary = null;
+let topErrCache = [];
 
 async function refresh(resetPage){
   if (resetPage) PAGE = 0;
@@ -627,6 +629,7 @@ async function refresh(resetPage){
     setAuthBadge(true);
     cache = p.proxies || [];
     poolSummary = p.summary || null;
+    topErrCache = p.topErrors || [];
     const total = p.count ?? 0;
     $('sTotal').textContent = total.toLocaleString(LANG === 'fa' ? 'fa-IR' : 'en-US');
     const alive = (s.alive ?? poolSummary?.alive ?? cache.filter(x => x.alive === true).length);
@@ -655,14 +658,27 @@ function statusBadge(x){
 function renderTable(total, pages){
   const maxLat = Math.max(1, ...cache.map(x => x.latencyMs || 0));
   const rows = cache;
+  const errBox = $('errBox');
+  if (topErrCache && topErrCache.length && errBox) {
+    errBox.classList.remove('hidden');
+    errBox.innerHTML = `<b class="text-xs">⚠ ${t('px.toperr')}</b>
+      <div class="flex flex-wrap gap-1 mt-1">` + topErrCache.map(e =>
+        `<span class="badge badge-bad mono" title="${esc(e.error)}">${esc(e.error.slice(0, 42))} · ${e.count}</span>`
+      ).join('') + `</div>`;
+  } else if (errBox) { errBox.classList.add('hidden'); errBox.innerHTML = ''; }
   $('rows').innerHTML = rows.map(x => {
     const lat = x.latencyMs == null ? '–' : x.latencyMs + ' ms';
     const bar = x.latencyMs == null ? '' :
       `<div class="prog mt-1" style="width:90px;"><div style="width:${Math.max(6, Math.round(x.latencyMs / maxLat * 100))}%"></div></div>`;
+    const protoTag = x.transport && x.transport !== x.protocol
+      ? `<span class="badge badge-mut mono">${esc(x.protocol)}</span>→<span class="badge badge-info mono">${esc(x.transport)}</span>`
+      : `<span class="badge badge-mut mono">${esc(x.protocol)}</span>`;
+    const errTag = x.alive === false && x.lastError
+      ? `<div class="mono mt-1" style="font-size:.68rem;color:hsl(var(--destructive) / .9);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(x.lastError)}">${esc(x.lastError)}</div>` : '';
     return `<tr>
       <td>${statusBadge(x)}</td>
-      <td class="mono" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(x.url)}">${esc(x.url)}</td>
-      <td><span class="badge badge-mut mono">${esc(x.protocol)}</span></td>
+      <td class="mono" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(x.url)}">${esc(x.url)}${errTag}</td>
+      <td class="whitespace-nowrap">${protoTag}</td>
       <td class="mono whitespace-nowrap">${lat}${bar}</td>
       <td class="mono whitespace-nowrap"><span style="color:hsl(var(--success));">${x.success}</span><span style="color:hsl(var(--muted));"> / </span><span style="color:${x.fail ? 'hsl(var(--destructive))' : 'hsl(var(--muted))'};">${x.fail}</span></td>
       <td class="whitespace-nowrap" style="color:hsl(var(--muted));">${fmtTime(x.lastUsed)}</td>
