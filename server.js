@@ -35,12 +35,16 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const https = require('https');
 const net = require('net');
+const tls = require('tls');
 const dns = require('dns').promises;
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
-const { ProxyAgent } = require('proxy-agent');
+const { HttpProxyAgent } = require('http-proxy-agent');
+const { HttpsProxyAgent } = require('https-proxy-agent');
+const { SocksProxyAgent } = require('socks-proxy-agent');
 const { SocksClient } = require('socks');
 
 // ---------------------------------------------------------------- config
@@ -376,6 +380,81 @@ function effectiveUrl(p) {
 }
 function effectiveProto(p) { return p.transport || p.protocol; }
 
+// ---------------------------------------------------------------- proxy dialing
+// node:http(s) + per-protocol agents. (The built-in undici fetch ignores an
+// agent-base `dispatcher`, which silently sent every proxied request DIRECT —
+// the old 'fetch failed' mystery. Raw node:http has no such bypass.)
+const agentCache = new Map();
+function agentFor(proxyUrl, secureTarget) {
+  const cacheKey = `${secureTarget ? 'https' : 'http'}+${proxyUrl}`;
+  let a = agentCache.get(cacheKey);
+  if (!a) {
+    const proto = new URL(proxyUrl).protocol;
+    if (proto.startsWith('socks')) a = new SocksProxyAgent(proxyUrl);
+    else if (proto === 'https:') a = new HttpsProxyAgent(proxyUrl);
+    else a = secureTarget ? new HttpsProxyAgent(proxyUrl) : new HttpProxyAgent(proxyUrl);
+    agentCache.set(cacheKey, a);
+    if (agentCache.size > 500) {
+      const oldest = agentCache.keys().next().value;
+      try { agentCache.get(oldest).destroy(); } catch { /* */ }
+      agentCache.delete(oldest);
+    }
+  }
+  return a;
+}
+
+function errMsg(e) {
+  return String((e && e.cause && e.cause.message) || (e && e.message) || e).slice(0, 160);
+}
+
+/** Plain node:http(s) request through `agent` (null = direct). */
+function rawRequest(target, { method = 'GET', headers = {}, body = null, agent = null, timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(target);
+    const lib = u.protocol === 'https:' ? https : http;
+    const payload = (method === 'GET' || method === 'HEAD' || body == null)
+      ? null : (Buffer.isBuffer(body) ? body : Buffer.from(String(body)));
+    const req = lib.request({
+      protocol: u.protocol,
+      hostname: u.hostname,
+      port: u.port || (u.protocol === 'https:' ? 443 : 80),
+      path: (u.pathname || '/') + (u.search || ''),
+      method,
+      headers: { connection: 'close', ...(payload ? { 'content-length': String(payload.length) } : {}), ...headers },
+      agent: agent || undefined,
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+    });
+    req.setTimeout(timeoutMs, () => req.destroy(new Error('request-timeout')));
+    req.once('error', reject);
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+/** GET/POST through proxy entry `p` (null = direct), following redirects. */
+async function fetchThroughProxy(p, target, { method = 'GET', headers = {}, body = null, timeoutMs = REQUEST_TIMEOUT_MS } = {}, maxRedirects = 5) {
+  let url = target;
+  let m = method;
+  let b = body;
+  for (let i = 0; i <= maxRedirects; i++) {
+    const secure = new URL(url).protocol === 'https:';
+    const out = await rawRequest(url, {
+      method: m, headers, body: (m === 'GET' || m === 'HEAD') ? null : b,
+      agent: p ? agentFor(effectiveUrl(p), secure) : null, timeoutMs,
+    });
+    if ([301, 302, 303, 307, 308].includes(out.status) && out.headers.location) {
+      url = new URL(out.headers.location, url).toString();
+      if (out.status === 303 || ((out.status === 301 || out.status === 302) && m === 'POST')) { m = 'GET'; b = null; }
+      continue;
+    }
+    return out;
+  }
+  throw new Error('too-many-redirects');
+}
+
 function alivePool() {
   const now = Date.now();
   return proxies.filter(p => p.alive !== false && p.backoffUntil <= now);
@@ -432,43 +511,34 @@ let checking = false;
 let checkCursor = 0; // round-robin position for incremental checks
 async function checkOne(p) {
   const t0 = Date.now();
-  const tryFetch = async (url) => {
-    const agent = new ProxyAgent(url);
-    const r = await fetch(CHECK_URL, {
-      dispatcher: agent,
-      signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
-      redirect: 'manual',
-    });
-    await r.arrayBuffer().catch(() => {});
-    return r.status;
-  };
   const tlsish = m => /ssl|tls|cert|eproto|wrong version|handshake|alert|record layer/i.test(String(m || ''));
   try {
-    const status = await tryFetch(effectiveUrl(p));
+    const out = await fetchThroughProxy(p, CHECK_URL, { timeoutMs: CHECK_TIMEOUT_MS });
+    const status = out.status;
     if (status >= 200 && status < 400) { markSuccess(p, Date.now() - t0); return; }
     // plain-HTTP entry that is actually a TLS-only proxy answers 400 to plain HTTP
     if (p.protocol === 'http' && !p.transport && status === 400) {
       try {
         p.transport = 'https';
-        const s2 = await tryFetch(effectiveUrl(p));
-        if (s2 >= 200 && s2 < 400) { markSuccess(p, Date.now() - t0); return; }
-        markFail(p, 'http-' + s2);
+        const out2 = await fetchThroughProxy(p, CHECK_URL, { timeoutMs: CHECK_TIMEOUT_MS });
+        if (out2.status >= 200 && out2.status < 400) { markSuccess(p, Date.now() - t0); return; }
+        markFail(p, 'http-' + out2.status);
         return;
-      } catch (e2) { p.transport = null; markFail(p, String((e2 && e2.message) || e2)); return; }
+      } catch (e2) { p.transport = null; markFail(p, errMsg(e2)); return; }
     }
     markFail(p, 'http-' + status);
   } catch (e) {
-    const msg = String((e && e.message) || e);
+    const msg = errMsg(e);
     // "https" entry that is actually plain HTTP: the TLS handshake blows up —
     // downgrade once and retry instead of marking dead.
     if (p.protocol === 'https' && (p.transport || p.protocol) === 'https' && tlsish(msg)) {
       try {
         p.transport = 'http';
-        const s2 = await tryFetch(effectiveUrl(p));
-        if (s2 >= 200 && s2 < 400) { markSuccess(p, Date.now() - t0); return; }
-        markFail(p, 'http-' + s2);
+        const out2 = await fetchThroughProxy(p, CHECK_URL, { timeoutMs: CHECK_TIMEOUT_MS });
+        if (out2.status >= 200 && out2.status < 400) { markSuccess(p, Date.now() - t0); return; }
+        markFail(p, 'http-' + out2.status);
         return;
-      } catch (e2) { markFail(p, String((e2 && e2.message) || e2)); return; }
+      } catch (e2) { markFail(p, errMsg(e2)); return; }
     }
     markFail(p, msg);
   }
@@ -575,34 +645,33 @@ async function fetchViaRotator(target, { method = 'GET', headers = {}, body = nu
 
   async function doFetch(p, label) {
     const t0 = Date.now();
-    const targetTimeout = timeoutMs;
-    const tryUrl = async (proxyUrl) => {
-      const dispatcher = p ? new ProxyAgent(proxyUrl) : undefined;
-      const r = await fetch(target, {
+    let out;
+    try {
+      out = await fetchThroughProxy(p, target, {
         method, headers: cleanHeaders,
         body: (method === 'GET' || method === 'HEAD' || body == null) ? undefined : body,
-        dispatcher, signal: AbortSignal.timeout(targetTimeout), redirect: 'follow',
+        timeoutMs,
       });
-      return r;
-    };
-    let r;
-    try {
-      r = await tryUrl(p ? effectiveUrl(p) : undefined);
     } catch (e) {
-      // same one-shot http<->https retry as the health-checker
-      const m = String((e && e.message) || e);
+      // one-shot http<->https downgrade (same as health-checker)
+      const m = errMsg(e);
       if (p && p.protocol === 'https' && (p.transport || p.protocol) === 'https' &&
           /ssl|tls|cert|eproto|wrong version|handshake|alert|record layer/i.test(m)) {
         p.transport = 'http';
-        r = await tryUrl(effectiveUrl(p));
+        out = await fetchThroughProxy(p, target, {
+          method, headers: cleanHeaders,
+          body: (method === 'GET' || method === 'HEAD' || body == null) ? undefined : body,
+          timeoutMs,
+        });
       } else throw e;
     }
-    const buf = Buffer.from(await r.arrayBuffer());
     const outHeaders = {};
-    r.headers.forEach((v, k) => { if (!HOP_HEADERS.has(k.toLowerCase())) outHeaders[k] = v; });
+    for (const [k, v] of Object.entries(out.headers || {})) {
+      if (!HOP_HEADERS.has(k.toLowerCase())) outHeaders[k] = Array.isArray(v) ? v.join(', ') : v;
+    }
     totalRequests++;
     if (p) { markSuccess(p, Date.now() - t0); saveStore(); }
-    return { status: r.status, headers: outHeaders, body: buf, proxy: label, latencyMs: Date.now() - t0 };
+    return { status: out.status, headers: outHeaders, body: out.body, proxy: label, latencyMs: Date.now() - t0 };
   }
 }
 
@@ -962,36 +1031,186 @@ server.on('connect', async (req, clientSocket, head) => {
   }
 });
 
-function openDirect(host, port) {
+// NOTE on node fetch: ProxyAgent extends agent-base's Agent, which only
+// plugs into node:http. The built-in undici fetch ignores `dispatcher`
+// unless it is an undici Dispatcher — so any dispatcher here is silently
+// bypassed and every proxied request goes DIRECT (and a direct hit from
+// Railway that fails looks exactly like "fetch failed" on the proxy).
+// We therefore dial through the proxy with plain node:http(s) requests and
+// correct per-protocol agents (Http/Https/SocksProxyAgent). CONNECT tunnels
+// are handled by those agents; `tunnelViaHttpProxy` below is the raw-socket
+// path for the server's own CONNECT handler.
+
+function dialTcp(host, port, timeoutMs) {
   return new Promise((resolve, reject) => {
-    const s = net.connect(port, host, () => resolve(s));
+    const s = net.connect({ host, port, timeout: timeoutMs || REQUEST_TIMEOUT_MS }, () => {
+      s.setTimeout(0);
+      resolve(s);
+    });
+    s.once('timeout', () => { s.destroy(new Error('tcp-connect-timeout')); });
     s.once('error', reject);
   });
 }
 
-function openViaHttpProxy(proxyUrl, destHost, destPort) {
+/** Open a TCP tunnel to destHost:destPort THROUGH an http/https upstream. */
+function tunnelViaHttpProxy(proxyUrl, destHost, destPort, timeoutMs) {
   return new Promise((resolve, reject) => {
     const pu = new URL(proxyUrl);
     const defPort = pu.protocol === 'https:' ? 443 : 8080;
-    const s = net.connect(parseInt(pu.port, 10) || defPort, pu.hostname, () => {
+    const port = parseInt(pu.port, 10) || defPort;
+    const onSocket = (s) => {
       let hdr = `CONNECT ${destHost}:${destPort} HTTP/1.1\r\nHost: ${destHost}:${destPort}\r\n`;
-      if (pu.username) hdr += `Proxy-Authorization: Basic ${Buffer.from(`${decodeURIComponent(pu.username)}:${decodeURIComponent(pu.password)}`).toString('base64')}\r\n`;
-      hdr += '\r\n';
+      if (pu.username) {
+        try {
+          hdr += `Proxy-Authorization: Basic ${Buffer.from(`${decodeURIComponent(pu.username)}:${decodeURIComponent(pu.password || '')}`).toString('base64')}\r\n`;
+        } catch { /* ignore bad encoding */ }
+      }
+      hdr += 'Connection: keep-alive\r\n\r\n';
+      let buf = '';
+      const timer = setTimeout(() => { s.destroy(new Error('proxy-connect-timeout')); }, timeoutMs || REQUEST_TIMEOUT_MS);
+      const onData = (chunk) => {
+        buf += chunk.toString('utf8');
+        if (!buf.includes('\r\n\r\n')) return;
+        clearTimeout(timer);
+        s.removeListener('data', onData);
+        const status = parseInt((buf.split(' ')[1] || '0'), 10);
+        if (status >= 200 && status < 300) resolve(s);
+        else { s.destroy(); reject(new Error('upstream-connect-' + status)); }
+      };
+      s.on('data', onData);
+      s.once('error', (e) => { clearTimeout(timer); reject(e); });
       s.write(hdr);
-    });
-    let buf = '';
-    const onData = chunk => {
-      buf += chunk.toString('utf8');
-      if (!buf.includes('\r\n\r\n')) return;
-      s.removeListener('data', onData);
-      const status = parseInt(buf.split(' ')[1], 10);
-      if (status >= 200 && status < 300) resolve(s);
-      else { s.destroy(); reject(new Error('upstream-connect-' + status)); }
     };
-    s.on('data', onData);
-    s.once('error', reject);
-    setTimeout(() => reject(new Error('upstream-connect-timeout')), REQUEST_TIMEOUT_MS);
+    if (pu.protocol === 'https:') {
+      const tlsSock = tls.connect({ host: pu.hostname, port, timeout: timeoutMs || REQUEST_TIMEOUT_MS }, () => {
+        tlsSock.setTimeout(0);
+        onSocket(tlsSock);
+      });
+      tlsSock.once('timeout', () => tlsSock.destroy(new Error('tls-connect-timeout')));
+      tlsSock.once('error', reject);
+    } else {
+      dialTcp(pu.hostname, port, timeoutMs).then(onSocket, reject);
+    }
   });
+}
+
+/** statusLine: 'HTTP/1.1 200 OK' + headers map from a raw response head. */
+function parseHead(head) {
+  const lines = head.split('\r\n');
+  const status = parseInt((lines[0].split(' ')[1] || '0'), 10);
+  const headers = {};
+  for (const ln of lines.slice(1)) {
+    const i = ln.indexOf(':');
+    if (i > 0) headers[ln.slice(0, i).trim().toLowerCase()] = ln.slice(i + 1).trim();
+  }
+  return { status, headers };
+}
+
+/**
+ * GET/POST `target` over an already-tunneled socket (plain or TLS to the
+ * destination). Handles 1xx/redirects and chunked + content-length bodies,
+ * cap 25MB.
+ */
+function httpOverSocket(socket, target, { method = 'GET', headers = {}, body = null, timeoutMs = REQUEST_TIMEOUT_MS, tlsToDest = false, destHost = null, maxBody = 25 * 1024 * 1024 } = {}) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(target);
+    const host = destHost || u.hostname;
+    const port = u.port || (u.protocol === 'https:' ? '443' : '80');
+    const pathQ = (u.pathname || '/') + (u.search || '');
+    const useTls = tlsToDest || u.protocol === 'https:';
+    const doRun = (sock) => {
+      const h = { host: u.host, connection: 'close', ...headers };
+      delete h['content-length'];
+      let payload = null;
+      if (method !== 'GET' && method !== 'HEAD' && body != null) {
+        payload = Buffer.isBuffer(body) ? body : Buffer.from(String(body));
+        h['content-length'] = String(payload.length);
+      }
+      let req = `${method} ${pathQ} HTTP/1.1\r\n`;
+      for (const [k, v] of Object.entries(h)) req += `${k}: ${v}\r\n`;
+      req += '\r\n';
+      const timer = setTimeout(() => { try { sock.destroy(new Error('target-timeout')); } catch { /* */ } }, timeoutMs);
+      let buf = Buffer.alloc(0);
+      let settled = false;
+      const done = (err, out) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        try { sock.destroy(); } catch { /* */ }
+        if (err) reject(err);
+        else resolve(out);
+      };
+      const onData = (chunk) => {
+        buf = Buffer.concat([buf, chunk]);
+        if (buf.length > maxBody + 65536) { sock.removeListener('data', onData); done(new Error('response-too-large')); return; }
+        for (;;) {
+          const hi = buf.indexOf('\r\n\r\n');
+          if (hi < 0) return;
+          const { status, headers: rh } = parseHead(buf.slice(0, hi).toString('utf8'));
+          if (status >= 100 && status < 200) { buf = buf.slice(hi + 4); continue; }
+          if ([301, 302, 303, 307, 308].includes(status) && rh.location) {
+            sock.removeListener('data', onData);
+            let next;
+            try { next = new URL(rh.location, target).toString(); }
+            catch { done(new Error('bad-redirect')); return; }
+            done(null, { redirect: next, redirectStatus: status });
+            return;
+          }
+          let bodyBuf = null;
+          if (String(rh['transfer-encoding'] || '').toLowerCase().includes('chunked')) {
+            // minimal chunked parser
+            let pos = hi + 4;
+            const parts = [];
+            for (;;) {
+              const le = buf.indexOf('\r\n', pos);
+              if (le < 0) return; // need more
+              const size = parseInt(buf.slice(pos, le).toString('utf8').trim().split(';')[0], 16);
+              if (Number.isNaN(size)) { sock.removeListener('data', onData); done(new Error('bad-chunk')); return; }
+              if (buf.length < le + 2 + size + 2) return; // need more
+              if (size === 0) { bodyBuf = Buffer.concat(parts); buf = buf.slice(le + 4); break; }
+              parts.push(buf.slice(le + 2, le + 2 + size));
+              pos = le + 2 + size + 2;
+            }
+          } else if (rh['content-length'] != null) {
+            const len = parseInt(rh['content-length'], 10);
+            if (Number.isNaN(len) || len < 0) { sock.removeListener('data', onData); done(new Error('bad-length')); return; }
+            if (buf.length < hi + 4 + len) return; // need more
+            bodyBuf = buf.slice(hi + 4, hi + 4 + len);
+          } else {
+            // no length and not chunked: read until close — wait for more/end
+            return;
+          }
+          sock.removeListener('data', onData);
+          done(null, { status, headers: rh, body: bodyBuf || Buffer.alloc(0) });
+          return;
+        }
+      };
+      sock.on('data', onData);
+      sock.once('end', () => {
+        // server closed without length: take what we have past headers
+        const hi = buf.indexOf('\r\n\r\n');
+        if (hi >= 0 && !settled) {
+          const { status, headers: rh } = parseHead(buf.slice(0, hi).toString('utf8'));
+          done(null, { status, headers: rh, body: buf.slice(hi + 4) });
+        } else if (!settled) done(new Error('connection-closed'));
+      });
+      sock.once('error', (e) => done(e));
+      sock.write(req);
+      if (payload) sock.write(payload);
+    };
+    if (useTls) {
+      const t = tls.connect({ socket, host, port: parseInt(port, 10), servername: host }, () => doRun(t));
+      t.once('error', reject);
+    } else doRun(socket);
+  });
+}
+
+function openViaHttpProxy(proxyUrl, destHost, destPort) {
+  return tunnelViaHttpProxy(proxyUrl, destHost, destPort, REQUEST_TIMEOUT_MS);
+}
+
+function openDirect(host, port) {
+  return dialTcp(host, port, REQUEST_TIMEOUT_MS);
 }
 
 async function openViaSocks(proxyUrl, destHost, destPort) {

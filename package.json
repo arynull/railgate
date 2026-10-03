@@ -9,13 +9,15 @@
   },
   "scripts": {
     "start": "node server.js",
-    "test": "node --test test/smoke.test.js test/sources.test.js"
+    "test": "node --test test/smoke.test.js test/sources.test.js test/e2e.test.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.19.2",
+    "http-proxy-agent": "^7.0.2",
+    "https-proxy-agent": "^7.0.6",
     "multer": "^1.4.5-lts.1",
-    "proxy-agent": "^6.4.0",
-    "socks": "^2.8.4"
+    "socks": "^2.8.4",
+    "socks-proxy-agent": "^8.0.5"
   }
 }
