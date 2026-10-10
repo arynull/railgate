@@ -1,7 +1,7 @@
 {
   "name": "railgate",
-  "version": "1.0.0",
-  "description": "Rotating proxy gateway for Railway — add HTTP/HTTPS/SOCKS proxies, request via one Railway URL with smart rotation",
+  "version": "1.0.1",
+  "description": "Rotating proxy gateway for Railway \u2014 add HTTP/HTTPS/SOCKS proxies, request via one Railway URL with smart rotation",
   "main": "server.js",
   "type": "commonjs",
   "engines": {
