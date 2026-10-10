@@ -63,6 +63,7 @@ const ALLOW_DIRECT = (process.env.ALLOW_DIRECT || 'true').toLowerCase() !== 'fal
 const BLOCK_PRIVATE = (process.env.BLOCK_PRIVATE || 'true').toLowerCase() !== 'false';
 const MAX_BODY_MB = parseInt(process.env.MAX_BODY_MB || '10', 10);
 const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'proxies.json');
+const PKG = require(path.join(__dirname, 'package.json'));
 // Auto-fetch subscriptions: poll proxy-list URLs every N minutes.
 const SUBSCRIPTION_URLS = (process.env.SUBSCRIPTION_URLS || '').trim();
 const SUBSCRIPTION_INTERVAL_MS = parseInt(process.env.SUBSCRIPTION_INTERVAL_MS || '600000', 10);
@@ -765,6 +766,14 @@ app.get('/health', (req, res) => {
     alive: proxies.filter(p => p.alive === true).length,
     requests: totalRequests, errors: totalErrors,
     sessions: sessions.size,
+  });
+});
+
+// --- version
+app.get('/api/version', (req, res) => {
+  res.json({
+    name: PKG.name, version: PKG.version,
+    node: process.version, uptime_s: Math.floor(process.uptime()),
   });
 });
 
